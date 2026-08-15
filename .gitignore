@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+
+# Flutter
+frontend/thermoroute_app/.dart_tool/
+frontend/thermoroute_app/build/
+frontend/thermoroute_app/.flutter-plugins
+frontend/thermoroute_app/.flutter-plugins-dependencies
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
