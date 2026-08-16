@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from .models.climate_models import ClimateReading
@@ -19,6 +20,13 @@ app = FastAPI(
         "Climate-aware route analysis backend for ThermoRoute."
     ),
     version="0.1.0",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

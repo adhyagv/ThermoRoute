@@ -1,0 +1,5 @@
+[33m63b30b8[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32madhya-optimization[m[33m)[m Merge remote-tracking branch 'origin/anju-backend' into adhya-optimization
+[33m84de563[m[33m ([m[1;31morigin/adhya-optimization[m[33m)[m Add ThermoRoute backend and Flutter frontend
+[33m1f1ed57[m[33m ([m[1;31morigin/anju-backend[m[33m, [m[1;32manju-backend[m[33m)[m Set up working ThermoRoute backend
+[33mff64844[m Build thermal exposure and route optimizer
+[33m3745763[m Create ThermoRoute project structure

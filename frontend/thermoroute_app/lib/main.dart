@@ -13,7 +13,7 @@ void main() {
 // CONFIG
 // ============================================================
 
-const String apiBaseUrl = 'http://127.0.0.1:8000';
+const String apiBaseUrl = 'http://127.0.0.1:8001';
 
 const LatLng defaultStart = LatLng(
   12.93485,
@@ -24,6 +24,9 @@ const LatLng defaultDestination = LatLng(
   12.90730,
   77.57313,
 );
+
+const Color thermoTeal = Color(0xFF0B5D5E);
+const Color lightTeal = Color(0xFFE4F4EF);
 
 // ============================================================
 // APP
@@ -39,10 +42,9 @@ class ThermoRouteApp extends StatelessWidget {
       title: 'ThermoRoute',
       theme: ThemeData(
         useMaterial3: true,
-        scaffoldBackgroundColor:
-            const Color(0xFFF5F8F7),
+        scaffoldBackgroundColor: const Color(0xFFF5F8F7),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0B5D5E),
+          seedColor: thermoTeal,
         ),
       ),
       home: const JourneySetupScreen(),
@@ -74,10 +76,8 @@ class _JourneySetupScreenState
     text: 'JP Nagar Metro Station, Bengaluru',
   );
 
-  double extraTime = 20;
-
   String departureTime = '16:00';
-
+  double extraTime = 20;
   bool loading = false;
 
   @override
@@ -88,7 +88,8 @@ class _JourneySetupScreenState
   }
 
   // ==========================================================
-  // FIND BEST ROUTE
+  // CALL FASTAPI
+  // POST /api/optimize
   // ==========================================================
 
   Future<void> findBestRoute() async {
@@ -112,18 +113,29 @@ class _JourneySetupScreenState
     });
 
     try {
-      final response = await http.post(
-        Uri.parse('$apiBaseUrl/api/optimize'),
-        headers: {
+      final uri = Uri.parse(
+        '$apiBaseUrl/api/optimize',
+      );
+
+      final requestBody = {
+        'from_location': from,
+        'destination': destination,
+        'departure_time': departureTime,
+        'max_extra_time_percent':
+            extraTime.round(),
+      };
+
+      final response = await http
+          .post(
+        uri,
+        headers: const {
           'Content-Type': 'application/json',
+          'Accept': 'application/json',
         },
-        body: jsonEncode({
-          'from_location': from,
-          'destination': destination,
-          'departure_time': departureTime,
-          'max_extra_time_percent':
-              extraTime.round(),
-        }),
+        body: jsonEncode(requestBody),
+      )
+          .timeout(
+        const Duration(seconds: 30),
       );
 
       if (!mounted) return;
@@ -136,8 +148,30 @@ class _JourneySetupScreenState
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'API error: ${response.statusCode}\n'
+              'ThermoRoute API error: '
+              '${response.statusCode}\n'
               '${response.body}',
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+
+        return;
+      }
+
+      final decoded = jsonDecode(
+        response.body,
+      );
+
+      if (decoded is! Map) {
+        setState(() {
+          loading = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Invalid response from ThermoRoute API.',
             ),
           ),
         );
@@ -145,9 +179,114 @@ class _JourneySetupScreenState
         return;
       }
 
-      final data =
-          jsonDecode(response.body)
-              as Map<String, dynamic>;
+      final result =
+          Map<String, dynamic>.from(decoded);
+
+      // --------------------------------------------------------
+      // IMPORTANT:
+      // The backend returns:
+      //
+      // recommendation -> selected route
+      // options        -> Route A, Route B, Route C
+      //
+      // We display ALL options.
+      // --------------------------------------------------------
+
+      final rawOptions = result['options'];
+
+      if (rawOptions is! List ||
+          rawOptions.isEmpty) {
+        setState(() {
+          loading = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'API returned no route options.',
+            ),
+          ),
+        );
+
+        return;
+      }
+
+      final options =
+          <Map<String, dynamic>>[];
+
+      for (int i = 0;
+          i < rawOptions.length;
+          i++) {
+        final raw = rawOptions[i];
+
+        if (raw is! Map) continue;
+
+        final option =
+            Map<String, dynamic>.from(raw);
+
+        option['route'] =
+            option['route']?.toString() ??
+                'Route ${String.fromCharCode(65 + i)}';
+
+        option['travel_time_min'] =
+            _formatNumber(
+          option['travel_time_min'],
+          1,
+        );
+
+        option['distance_km'] =
+            _formatNumber(
+          option['distance_km'],
+          2,
+        );
+
+        option['thermal_exposure'] =
+            _formatNumber(
+          option['thermal_exposure'],
+          0,
+        );
+
+        option['valid'] =
+            option['valid'] == true;
+
+        option['within_time_limit'] =
+            option['within_time_limit'] == true;
+
+        option['within_exposure_budget'] =
+            option['within_exposure_budget'] == true;
+
+        option['recommended'] =
+            option['recommended'] == true;
+
+        options.add(option);
+      }
+
+      // --------------------------------------------------------
+      // KEEP BACKEND'S RECOMMENDATION
+      // --------------------------------------------------------
+
+      final recommendation =
+          result['recommendation'];
+
+      if (recommendation is Map) {
+        final recommendedRoute =
+            recommendation['route']
+                ?.toString()
+                .toLowerCase();
+
+        for (final option in options) {
+          final route =
+              option['route']
+                  ?.toString()
+                  .toLowerCase();
+
+          option['recommended'] =
+              route == recommendedRoute;
+        }
+      }
+
+      // Put normalized options back.
+      result['options'] = options;
 
       setState(() {
         loading = false;
@@ -156,12 +295,13 @@ class _JourneySetupScreenState
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => RouteResultsScreen(
+          builder: (_) =>
+              RouteResultsScreen(
             from: from,
             destination: destination,
             departureTime: departureTime,
             extraTime: extraTime,
-            result: data,
+            result: result,
           ),
         ),
       );
@@ -177,9 +317,36 @@ class _JourneySetupScreenState
           content: Text(
             'Could not connect to ThermoRoute API.\n$e',
           ),
+          duration: const Duration(seconds: 6),
         ),
       );
     }
+  }
+
+  String _formatNumber(
+    dynamic value,
+    int decimals,
+  ) {
+    if (value == null) return '--';
+
+    if (value is num) {
+      return value.toStringAsFixed(
+        decimals,
+      );
+    }
+
+    final parsed =
+        double.tryParse(
+      value.toString(),
+    );
+
+    if (parsed == null) {
+      return value.toString();
+    }
+
+    return parsed.toStringAsFixed(
+      decimals,
+    );
   }
 
   // ==========================================================
@@ -190,14 +357,16 @@ class _JourneySetupScreenState
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
+        backgroundColor:
+            const Color(0xFFE6F0EF),
         elevation: 0,
         title: Row(
           children: [
             Container(
-              padding: const EdgeInsets.all(8),
+              padding:
+                  const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: const Color(0xFF0B5D5E),
+                color: thermoTeal,
                 borderRadius:
                     BorderRadius.circular(10),
               ),
@@ -219,9 +388,12 @@ class _JourneySetupScreenState
       body: Center(
         child: ConstrainedBox(
           constraints:
-              const BoxConstraints(maxWidth: 700),
+              const BoxConstraints(
+            maxWidth: 700,
+          ),
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
+            padding:
+                const EdgeInsets.all(24),
             child: Column(
               crossAxisAlignment:
                   CrossAxisAlignment.start,
@@ -232,7 +404,8 @@ class _JourneySetupScreenState
                   'Move smarter.\nMove cooler.',
                   style: TextStyle(
                     fontSize: 38,
-                    fontWeight: FontWeight.bold,
+                    fontWeight:
+                        FontWeight.bold,
                     height: 1.1,
                   ),
                 ),
@@ -244,7 +417,8 @@ class _JourneySetupScreenState
                   'thermal exposure along your journey.',
                   style: TextStyle(
                     fontSize: 16,
-                    color: Colors.grey.shade700,
+                    color:
+                        Colors.grey.shade700,
                     height: 1.5,
                   ),
                 ),
@@ -254,33 +428,40 @@ class _JourneySetupScreenState
                 _InputCard(
                   title: 'Starting point',
                   icon: Icons.my_location,
-                  controller: fromController,
+                  controller:
+                      fromController,
                 ),
 
                 const SizedBox(height: 14),
 
                 _InputCard(
                   title: 'Destination',
-                  icon: Icons.location_on_outlined,
+                  icon:
+                      Icons.location_on_outlined,
                   controller:
                       destinationController,
                 ),
 
                 const SizedBox(height: 20),
 
-                // =================================================
+                // ------------------------------------------------
                 // DEPARTURE TIME
-                // =================================================
+                // ------------------------------------------------
 
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
+                  padding:
+                      const EdgeInsets.all(18),
+                  decoration:
+                      BoxDecoration(
                     color: Colors.white,
                     borderRadius:
-                        BorderRadius.circular(16),
+                        BorderRadius.circular(
+                      16,
+                    ),
                     border: Border.all(
-                      color: Colors.grey.shade300,
+                      color:
+                          Colors.grey.shade300,
                     ),
                   ),
                   child: Column(
@@ -290,34 +471,45 @@ class _JourneySetupScreenState
                       const Text(
                         'Departure time',
                         style: TextStyle(
-                          fontWeight: FontWeight.bold,
+                          fontWeight:
+                              FontWeight.bold,
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        value: departureTime,
+                      const SizedBox(
+                        height: 12,
+                      ),
+                      DropdownButtonFormField<
+                          String>(
+                        value:
+                            departureTime,
                         decoration:
                             const InputDecoration(
-                          border: OutlineInputBorder(),
+                          border:
+                              OutlineInputBorder(),
                         ),
                         items: const [
                           DropdownMenuItem(
                             value: '14:00',
-                            child: Text('2:00 PM'),
+                            child:
+                                Text('2:00 PM'),
                           ),
                           DropdownMenuItem(
                             value: '16:00',
-                            child: Text('4:00 PM'),
+                            child:
+                                Text('4:00 PM'),
                           ),
                           DropdownMenuItem(
                             value: '18:00',
-                            child: Text('6:00 PM'),
+                            child:
+                                Text('6:00 PM'),
                           ),
                         ],
-                        onChanged: (value) {
+                        onChanged:
+                            (value) {
                           if (value != null) {
                             setState(() {
-                              departureTime = value;
+                              departureTime =
+                                  value;
                             });
                           }
                         },
@@ -328,24 +520,27 @@ class _JourneySetupScreenState
 
                 const SizedBox(height: 18),
 
-                // =================================================
+                // ------------------------------------------------
                 // EXTRA TIME
-                // =================================================
+                // ------------------------------------------------
 
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
+                  padding:
+                      const EdgeInsets.all(18),
+                  decoration:
+                      BoxDecoration(
                     color: Colors.white,
                     borderRadius:
-                        BorderRadius.circular(16),
+                        BorderRadius.circular(
+                      16,
+                    ),
                     border: Border.all(
-                      color: Colors.grey.shade300,
+                      color:
+                          Colors.grey.shade300,
                     ),
                   ),
                   child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
                     children: [
                       Row(
                         children: [
@@ -360,11 +555,12 @@ class _JourneySetupScreenState
                           ),
                           Text(
                             '${extraTime.round()}%',
-                            style: const TextStyle(
+                            style:
+                                const TextStyle(
                               fontWeight:
                                   FontWeight.bold,
                               color:
-                                  Color(0xFF0B5D5E),
+                                  thermoTeal,
                             ),
                           ),
                         ],
@@ -375,10 +571,12 @@ class _JourneySetupScreenState
                         max: 50,
                         divisions: 10,
                         activeColor:
-                            const Color(0xFF0B5D5E),
-                        onChanged: (value) {
+                            thermoTeal,
+                        onChanged:
+                            (value) {
                           setState(() {
-                            extraTime = value;
+                            extraTime =
+                                value;
                           });
                         },
                       ),
@@ -391,9 +589,12 @@ class _JourneySetupScreenState
                 SizedBox(
                   width: double.infinity,
                   height: 54,
-                  child: ElevatedButton.icon(
+                  child:
+                      ElevatedButton.icon(
                     onPressed:
-                        loading ? null : findBestRoute,
+                        loading
+                            ? null
+                            : findBestRoute,
                     icon: loading
                         ? const SizedBox(
                             width: 20,
@@ -401,28 +602,35 @@ class _JourneySetupScreenState
                             child:
                                 CircularProgressIndicator(
                               strokeWidth: 2,
-                              color: Colors.white,
+                              color:
+                                  Colors.white,
                             ),
                           )
-                        : const Icon(Icons.route),
+                        : const Icon(
+                            Icons.route,
+                          ),
                     label: Text(
                       loading
                           ? 'CALCULATING...'
                           : 'FIND BEST ROUTE',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
+                      style:
+                          const TextStyle(
+                        fontWeight:
+                            FontWeight.bold,
                       ),
                     ),
                     style:
                         ElevatedButton.styleFrom(
                       backgroundColor:
-                          const Color(0xFF0B5D5E),
+                          thermoTeal,
                       foregroundColor:
                           Colors.white,
                       shape:
                           RoundedRectangleBorder(
                         borderRadius:
-                            BorderRadius.circular(16),
+                            BorderRadius.circular(
+                          16,
+                        ),
                       ),
                     ),
                   ),
@@ -434,7 +642,8 @@ class _JourneySetupScreenState
                   child: Text(
                     'Thermal-aware route optimization',
                     style: TextStyle(
-                      color: Colors.grey.shade600,
+                      color:
+                          Colors.grey.shade600,
                       fontSize: 12,
                     ),
                   ),
@@ -452,7 +661,8 @@ class _JourneySetupScreenState
 // INPUT CARD
 // ============================================================
 
-class _InputCard extends StatelessWidget {
+class _InputCard
+    extends StatelessWidget {
   final String title;
   final IconData icon;
   final TextEditingController controller;
@@ -464,10 +674,16 @@ class _InputCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+      BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
+      padding:
+          const EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: 6,
+      ),
+      decoration:
+          BoxDecoration(
         color: Colors.white,
         borderRadius:
             BorderRadius.circular(16),
@@ -477,11 +693,12 @@ class _InputCard extends StatelessWidget {
       ),
       child: TextField(
         controller: controller,
-        decoration: InputDecoration(
+        decoration:
+            InputDecoration(
           labelText: title,
           prefixIcon: Icon(
             icon,
-            color: const Color(0xFF0B5D5E),
+            color: thermoTeal,
           ),
           border: InputBorder.none,
         ),
@@ -494,7 +711,8 @@ class _InputCard extends StatelessWidget {
 // RESULTS SCREEN
 // ============================================================
 
-class RouteResultsScreen extends StatefulWidget {
+class RouteResultsScreen
+    extends StatefulWidget {
   final String from;
   final String destination;
   final String departureTime;
@@ -511,8 +729,9 @@ class RouteResultsScreen extends StatefulWidget {
   });
 
   @override
-  State<RouteResultsScreen> createState() =>
-      _RouteResultsScreenState();
+  State<RouteResultsScreen>
+      createState() =>
+          _RouteResultsScreenState();
 }
 
 class _RouteResultsScreenState
@@ -523,7 +742,6 @@ class _RouteResultsScreenState
   LatLng? destinationLocation;
 
   bool mapLoading = true;
-
   String? mapError;
 
   @override
@@ -533,11 +751,12 @@ class _RouteResultsScreenState
   }
 
   // ==========================================================
-  // GEOCODE USER LOCATIONS
+  // GEOCODING
   // ==========================================================
 
   Future<LatLng?> geocodeLocation(
-      String location) async {
+    String location,
+  ) async {
     try {
       final encoded =
           Uri.encodeQueryComponent(
@@ -551,9 +770,10 @@ class _RouteResultsScreenState
         '&limit=1',
       );
 
-      final response = await http.get(
+      final response =
+          await http.get(
         url,
-        headers: {
+        headers: const {
           'User-Agent':
               'ThermoRouteHackathonDemo/1.0',
         },
@@ -563,28 +783,33 @@ class _RouteResultsScreenState
         return null;
       }
 
-      final List<dynamic> data =
-          jsonDecode(response.body)
-              as List<dynamic>;
+      final data =
+          jsonDecode(response.body);
 
-      if (data.isEmpty) {
+      if (data is! List ||
+          data.isEmpty) {
         return null;
       }
 
       final item =
-          data.first as Map<String, dynamic>;
+          Map<String, dynamic>.from(
+        data.first as Map,
+      );
 
       final lat =
           double.tryParse(
-        item['lat']?.toString() ?? '',
+        item['lat']?.toString() ??
+            '',
       );
 
       final lon =
           double.tryParse(
-        item['lon']?.toString() ?? '',
+        item['lon']?.toString() ??
+            '',
       );
 
-      if (lat == null || lon == null) {
+      if (lat == null ||
+          lon == null) {
         return null;
       }
 
@@ -595,7 +820,7 @@ class _RouteResultsScreenState
   }
 
   // ==========================================================
-  // LOAD ACTUAL MAP ROUTE
+  // MAP
   // ==========================================================
 
   Future<void> loadMapRoute() async {
@@ -606,29 +831,39 @@ class _RouteResultsScreenState
         routePoints = [];
       });
 
-      // Find the real coordinates for the entered locations.
-      final start = await geocodeLocation(widget.from);
-      final destination = await geocodeLocation(widget.destination);
+      final start =
+          await geocodeLocation(
+        widget.from,
+      );
 
-      // Fall back to the demo coordinates if geocoding fails.
-      final actualStart = start ?? defaultStart;
+      final destination =
+          await geocodeLocation(
+        widget.destination,
+      );
+
+      final actualStart =
+          start ?? defaultStart;
+
       final actualDestination =
-          destination ?? defaultDestination;
+          destination ??
+              defaultDestination;
 
-      // Get the actual road geometry from OSRM.
       final url = Uri.parse(
-        'https://router.project-osrm.org/route/v1/'
-        'driving/'
-        '${actualStart.longitude},${actualStart.latitude};'
+        'https://router.project-osrm.org'
+        '/route/v1/driving/'
+        '${actualStart.longitude},'
+        '${actualStart.latitude};'
         '${actualDestination.longitude},'
         '${actualDestination.latitude}'
         '?overview=full&geometries=geojson',
       );
 
-      final response = await http.get(
+      final response =
+          await http.get(
         url,
-        headers: {
-          'User-Agent': 'ThermoRouteHackathonDemo/1.0',
+        headers: const {
+          'User-Agent':
+              'ThermoRouteHackathonDemo/1.0',
         },
       );
 
@@ -636,24 +871,46 @@ class _RouteResultsScreenState
 
       if (response.statusCode == 200) {
         final data =
-            jsonDecode(response.body) as Map<String, dynamic>;
+            jsonDecode(response.body);
 
-        final routes = data['routes'];
+        if (data is Map &&
+            data['routes'] is List &&
+            (data['routes'] as List)
+                .isNotEmpty) {
+          final firstRoute =
+              (data['routes'] as List)
+                  .first;
 
-        if (routes is List && routes.isNotEmpty) {
-          final geometry = routes[0]['geometry'];
-          final coordinates = geometry['coordinates'] as List;
+          if (firstRoute is Map &&
+              firstRoute['geometry']
+                  is Map) {
+            final geometry =
+                firstRoute['geometry']
+                    as Map;
 
-          points = coordinates.map<LatLng>((point) {
-            return LatLng(
-              (point[1] as num).toDouble(),
-              (point[0] as num).toDouble(),
-            );
-          }).toList();
+            final coordinates =
+                geometry['coordinates'];
+
+            if (coordinates is List) {
+              points = coordinates
+                  .whereType<List>()
+                  .where(
+                    (p) => p.length >= 2,
+                  )
+                  .map(
+                    (p) => LatLng(
+                      (p[1] as num)
+                          .toDouble(),
+                      (p[0] as num)
+                          .toDouble(),
+                    ),
+                  )
+                  .toList();
+            }
+          }
         }
       }
 
-      // If the routing service fails, keep a visible fallback line.
       if (points.length < 2) {
         points = [
           actualStart,
@@ -664,88 +921,161 @@ class _RouteResultsScreenState
       if (!mounted) return;
 
       setState(() {
-        startLocation = actualStart;
-        destinationLocation = actualDestination;
+        startLocation =
+            actualStart;
+        destinationLocation =
+            actualDestination;
         routePoints = points;
         mapLoading = false;
 
-        if (start == null || destination == null) {
+        if (start == null ||
+            destination == null) {
           mapError =
-              'Using demo coordinates for one or more locations.';
-        } else if (response.statusCode != 200) {
+              'Using demo coordinates for the map.';
+        } else if (
+            response.statusCode != 200) {
           mapError =
-              'Road routing service unavailable. Showing a direct route.';
-        } else {
-          mapError = null;
+              'Road map service unavailable.';
         }
       });
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
 
       setState(() {
-        startLocation = defaultStart;
-        destinationLocation = defaultDestination;
+        startLocation =
+            defaultStart;
+        destinationLocation =
+            defaultDestination;
         routePoints = [
           defaultStart,
           defaultDestination,
         ];
         mapLoading = false;
         mapError =
-            'Map service unavailable. Showing demo route.';
+            'Map service unavailable. '
+            'Showing demo route.';
       });
     }
   }
 
+  Map<String, dynamic>
+      get recommendation {
+    final value =
+        widget.result['recommendation'];
+
+    if (value is Map) {
+      return Map<String, dynamic>.from(
+        value,
+      );
+    }
+
+    return {};
+  }
+
+  List<Map<String, dynamic>>
+      get options {
+    final value =
+        widget.result['options'];
+
+    if (value is List) {
+      return value
+          .whereType<Map>()
+          .map(
+            (item) =>
+                Map<String, dynamic>.from(
+              item,
+            ),
+          )
+          .toList();
+    }
+
+    return [];
+  }
+
+  String display(
+    dynamic value, [
+    String fallback = '--',
+  ]) {
+    if (value == null) {
+      return fallback;
+    }
+
+    final text =
+        value.toString().trim();
+
+    if (text.isEmpty ||
+        text == 'null') {
+      return fallback;
+    }
+
+    return text;
+  }
+
   // ==========================================================
-  // BUILD
+  // BUILD RESULTS
   // ==========================================================
 
   @override
-  Widget build(BuildContext context) {
-    final recommendation =
-        widget.result['recommendation'] is Map
-            ? Map<String, dynamic>.from(
-                widget.result['recommendation'],
-              )
-            : <String, dynamic>{};
+  Widget build(
+      BuildContext context) {
+    final rec = recommendation;
+
+    final recommendedRoute =
+        display(
+      rec['route'],
+      'Recommended Route',
+    );
 
     final travelTime =
-        recommendation['travel_time_min']
-                ?.toString() ??
-            '0';
+        display(
+      rec['travel_time_min'],
+    );
 
     final distance =
-        recommendation['distance_km']
-                ?.toString() ??
-            '0';
+        display(
+      rec['distance_km'],
+    );
 
     final exposure =
-        recommendation['thermal_exposure']
-                ?.toString() ??
-            '0';
+        display(
+      rec['thermal_exposure'],
+    );
 
     final maxAllowed =
-        widget.result['max_allowed_time']
-                ?.toString() ??
-            '--';
+        display(
+      widget.result[
+          'max_allowed_time'],
+    );
 
     final maxExtra =
-        widget.result[
-                    'max_extra_time_percent']
-                ?.toString() ??
-            widget.extraTime.round().toString();
+        display(
+      widget.result[
+          'max_extra_time_percent'],
+      widget.extraTime
+          .round()
+          .toString(),
+    );
+
+    final budget =
+        display(
+      widget.result[
+          'thermal_exposure_budget'],
+    );
 
     return Scaffold(
       appBar: AppBar(
         title: const Text(
           'ThermoRoute',
           style: TextStyle(
-            fontWeight: FontWeight.bold,
+            fontWeight:
+                FontWeight.bold,
           ),
         ),
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
+      body:
+          SingleChildScrollView(
+        padding:
+            const EdgeInsets.all(24),
         child: Center(
           child: ConstrainedBox(
             constraints:
@@ -760,7 +1090,8 @@ class _RouteResultsScreenState
                   'Your best journey',
                   style: TextStyle(
                     fontSize: 30,
-                    fontWeight: FontWeight.bold,
+                    fontWeight:
+                        FontWeight.bold,
                   ),
                 ),
 
@@ -770,7 +1101,8 @@ class _RouteResultsScreenState
                   '${widget.from} → '
                   '${widget.destination}',
                   style: TextStyle(
-                    color: Colors.grey.shade700,
+                    color:
+                        Colors.grey.shade700,
                   ),
                 ),
 
@@ -780,42 +1112,48 @@ class _RouteResultsScreenState
                   'Departure: '
                   '${widget.departureTime}',
                   style: TextStyle(
-                    color: Colors.grey.shade700,
+                    color:
+                        Colors.grey.shade700,
                   ),
                 ),
 
                 const SizedBox(height: 20),
 
-                // =================================================
-                // REAL MAP
-                // =================================================
-
                 _MapCard(
-                  routePoints: routePoints,
-                  loading: mapLoading,
-                  start: startLocation,
-                  destination: destinationLocation,
-                  error: mapError,
+                  routePoints:
+                      routePoints,
+                  loading:
+                      mapLoading,
+                  start:
+                      startLocation,
+                  destination:
+                      destinationLocation,
+                  error:
+                      mapError,
                 ),
 
                 const SizedBox(height: 24),
 
-                // =================================================
-                // RECOMMENDED JOURNEY
-                // =================================================
+                // ==================================================
+                // RECOMMENDED
+                // ==================================================
 
                 Container(
-                  width: double.infinity,
+                  width:
+                      double.infinity,
                   padding:
-                      const EdgeInsets.all(22),
-                  decoration: BoxDecoration(
-                    color:
-                        const Color(0xFFE4F4EF),
+                      const EdgeInsets.all(
+                    22,
+                  ),
+                  decoration:
+                      BoxDecoration(
+                    color: lightTeal,
                     borderRadius:
-                        BorderRadius.circular(20),
+                        BorderRadius.circular(
+                      20,
+                    ),
                     border: Border.all(
-                      color:
-                          const Color(0xFF0B5D5E),
+                      color: thermoTeal,
                       width: 1.5,
                     ),
                   ),
@@ -826,46 +1164,53 @@ class _RouteResultsScreenState
                       const Row(
                         children: [
                           Icon(
-                            Icons.check_circle,
+                            Icons
+                                .check_circle,
                             color:
-                                Color(0xFF0B5D5E),
+                                thermoTeal,
                           ),
-                          SizedBox(width: 8),
+                          SizedBox(
+                              width: 8),
                           Text(
                             'RECOMMENDED JOURNEY',
                             style:
                                 TextStyle(
                               fontWeight:
-                                  FontWeight.bold,
+                                  FontWeight
+                                      .bold,
                               color:
-                                  Color(
-                                      0xFF0B5D5E),
+                                  thermoTeal,
                             ),
                           ),
                         ],
                       ),
 
-                      const SizedBox(height: 14),
+                      const SizedBox(
+                          height: 14),
 
-                      const Text(
-                        'Recommended Route',
+                      Text(
+                        recommendedRoute,
                         style:
-                            TextStyle(
+                            const TextStyle(
                           fontSize: 27,
                           fontWeight:
-                              FontWeight.bold,
+                              FontWeight
+                                  .bold,
                         ),
                       ),
 
-                      const SizedBox(height: 8),
+                      const SizedBox(
+                          height: 8),
 
                       const Text(
-                        'Selected using travel-time '
-                        'constraints and estimated '
-                        'thermal exposure.',
+                        'Selected by the ThermoRoute '
+                        'optimization engine using '
+                        'travel-time and thermal-exposure '
+                        'constraints.',
                       ),
 
-                      const SizedBox(height: 20),
+                      const SizedBox(
+                          height: 20),
 
                       Wrap(
                         spacing: 30,
@@ -873,7 +1218,8 @@ class _RouteResultsScreenState
                         children: [
                           _InfoItem(
                             icon:
-                                Icons.timer_outlined,
+                                Icons
+                                    .timer_outlined,
                             value:
                                 '$travelTime min',
                             label:
@@ -889,99 +1235,40 @@ class _RouteResultsScreenState
                           ),
                           _InfoItem(
                             icon:
-                                Icons.thermostat,
+                                Icons
+                                    .thermostat,
                             value:
                                 exposure,
                             label:
-                                'Relative thermal exposure',
+                                'Thermal exposure',
                           ),
                         ],
-                      ),
-
-                      const SizedBox(height: 18),
-
-                      // =================================================
-                      // SCORE EXPLANATION
-                      // =================================================
-
-                      Container(
-                        padding:
-                            const EdgeInsets.all(14),
-                        decoration:
-                            BoxDecoration(
-                          color: Colors.white
-                              .withOpacity(0.7),
-                          borderRadius:
-                              BorderRadius
-                                  .circular(12),
-                        ),
-                        child: const Row(
-                          crossAxisAlignment:
-                              CrossAxisAlignment
-                                  .start,
-                          children: [
-                            Icon(
-                              Icons
-                                  .info_outline,
-                              color:
-                                  Color(
-                                      0xFF0B5D5E),
-                            ),
-                            SizedBox(
-                                width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment
-                                        .start,
-                                children: [
-                                  Text(
-                                    'What does this score mean?',
-                                    style:
-                                        TextStyle(
-                                      fontWeight:
-                                          FontWeight
-                                              .bold,
-                                    ),
-                                  ),
-                                  SizedBox(
-                                      height: 5),
-                                  Text(
-                                    'This is a relative thermal '
-                                    'exposure score, not a medical '
-                                    'risk measurement. It combines '
-                                    'temperature intensity with the '
-                                    'time spent along route segments.',
-                                    style:
-                                        TextStyle(
-                                      fontSize: 12,
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
                       ),
                     ],
                   ),
                 ),
 
-                const SizedBox(height: 24),
+                const SizedBox(
+                    height: 24),
 
-                // =================================================
+                // ==================================================
                 // ENGINE STATUS
-                // =================================================
+                // ==================================================
 
                 Container(
-                  width: double.infinity,
+                  width:
+                      double.infinity,
                   padding:
-                      const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
+                      const EdgeInsets.all(
+                    16,
+                  ),
+                  decoration:
+                      BoxDecoration(
                     color: Colors.white,
                     borderRadius:
-                        BorderRadius.circular(14),
+                        BorderRadius.circular(
+                      14,
+                    ),
                     border: Border.all(
                       color:
                           Colors.grey.shade300,
@@ -991,25 +1278,27 @@ class _RouteResultsScreenState
                     children: [
                       Icon(
                         Icons.check_circle,
-                        color: Colors.green,
+                        color:
+                            Colors.green,
                       ),
                       SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'ThermoRoute optimization engine '
-                          'successfully calculated this '
-                          'recommendation.',
+                          'ThermoRoute optimization '
+                          'engine successfully calculated '
+                          'this recommendation.',
                         ),
                       ),
                     ],
                   ),
                 ),
 
-                const SizedBox(height: 28),
+                const SizedBox(
+                    height: 28),
 
-                // =================================================
-                // ROUTE ANALYSIS
-                // =================================================
+                // ==================================================
+                // THREE ROUTES
+                // ==================================================
 
                 const Text(
                   'Route analysis',
@@ -1020,26 +1309,83 @@ class _RouteResultsScreenState
                   ),
                 ),
 
-                const SizedBox(height: 14),
+                const SizedBox(
+                    height: 14),
 
-                _AllRouteCards(
-                  result: widget.result,
-                ),
+                if (options.isEmpty)
+                  const Text(
+                    'No routes returned.',
+                  )
+                else
+                  Column(
+                    children:
+                        options.map(
+                      (option) {
+                        return _RouteCard(
+                          route: display(
+                            option[
+                                'route'],
+                            'Route',
+                          ),
+                          time: display(
+                            option[
+                                'travel_time_min'],
+                          ),
+                          distance:
+                              display(
+                            option[
+                                'distance_km'],
+                          ),
+                          exposure:
+                              display(
+                            option[
+                                'thermal_exposure'],
+                          ),
+                          reason:
+                              display(
+                            option[
+                                'reason'],
+                            'Route returned by '
+                            'the optimization engine.',
+                          ),
+                          recommended:
+                              option[
+                                      'recommended'] ==
+                                  true,
+                          valid:
+                              option[
+                                      'valid'] ==
+                                  true,
+                          withinExposureBudget:
+                              option[
+                                      'within_exposure_budget'] ==
+                                  true,
+                        );
+                      },
+                    ).toList(),
+                  ),
 
-                const SizedBox(height: 18),
+                const SizedBox(
+                    height: 18),
 
-                // =================================================
-                // OPTIMIZATION DECISION
-                // =================================================
+                // ==================================================
+                // DECISION
+                // ==================================================
 
                 Container(
-                  width: double.infinity,
+                  width:
+                      double.infinity,
                   padding:
-                      const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
+                      const EdgeInsets.all(
+                    18,
+                  ),
+                  decoration:
+                      BoxDecoration(
                     color: Colors.white,
                     borderRadius:
-                        BorderRadius.circular(16),
+                        BorderRadius.circular(
+                      16,
+                    ),
                     border: Border.all(
                       color:
                           Colors.grey.shade300,
@@ -1054,23 +1400,25 @@ class _RouteResultsScreenState
                           Icon(
                             Icons.tune_rounded,
                             color:
-                                Color(
-                                    0xFF0B5D5E),
+                                thermoTeal,
                           ),
-                          SizedBox(width: 10),
+                          SizedBox(
+                              width: 10),
                           Text(
                             'Optimization decision',
                             style:
                                 TextStyle(
                               fontSize: 17,
                               fontWeight:
-                                  FontWeight.bold,
+                                  FontWeight
+                                      .bold,
                             ),
                           ),
                         ],
                       ),
 
-                      const SizedBox(height: 18),
+                      const SizedBox(
+                          height: 18),
 
                       _DecisionRow(
                         label:
@@ -1079,7 +1427,8 @@ class _RouteResultsScreenState
                             '$maxExtra%',
                       ),
 
-                      const SizedBox(height: 12),
+                      const SizedBox(
+                          height: 12),
 
                       _DecisionRow(
                         label:
@@ -1088,7 +1437,8 @@ class _RouteResultsScreenState
                             '$maxAllowed min',
                       ),
 
-                      const SizedBox(height: 12),
+                      const SizedBox(
+                          height: 12),
 
                       _DecisionRow(
                         label:
@@ -1097,42 +1447,58 @@ class _RouteResultsScreenState
                             '$travelTime min',
                       ),
 
-                      const SizedBox(height: 18),
+                      const SizedBox(
+                          height: 12),
+
+                      _DecisionRow(
+                        label:
+                            'Thermal exposure budget',
+                        value:
+                            budget,
+                      ),
+
+                      const SizedBox(
+                          height: 18),
 
                       Container(
-                        width: double.infinity,
+                        width:
+                            double.infinity,
                         padding:
-                            const EdgeInsets.all(12),
+                            const EdgeInsets
+                                .all(
+                          12,
+                        ),
                         decoration:
                             BoxDecoration(
                           color:
-                              const Color(
-                                  0xFFE4F4EF),
+                              lightTeal,
                           borderRadius:
                               BorderRadius
-                                  .circular(12),
+                                  .circular(
+                            12,
+                          ),
                         ),
-                        child: const Row(
+                        child:
+                            const Row(
                           children: [
                             Icon(
                               Icons
                                   .check_circle,
                               color:
-                                  Color(
-                                      0xFF0B5D5E),
+                                  thermoTeal,
                               size: 20,
                             ),
                             SizedBox(
                                 width: 8),
                             Expanded(
                               child: Text(
-                                'Recommended route stays '
-                                'within your travel-time limit.',
+                                'Recommended route '
+                                'stays within the '
+                                'optimization limits.',
                                 style:
                                     TextStyle(
                                   color:
-                                      Color(
-                                          0xFF0B5D5E),
+                                      thermoTeal,
                                   fontWeight:
                                       FontWeight
                                           .w600,
@@ -1146,14 +1512,12 @@ class _RouteResultsScreenState
                   ),
                 ),
 
-                const SizedBox(height: 30),
-
-                // =================================================
-                // PLAN ANOTHER
-                // =================================================
+                const SizedBox(
+                    height: 30),
 
                 SizedBox(
-                  width: double.infinity,
+                  width:
+                      double.infinity,
                   height: 54,
                   child:
                       ElevatedButton.icon(
@@ -1171,117 +1535,27 @@ class _RouteResultsScreenState
                     style:
                         ElevatedButton.styleFrom(
                       backgroundColor:
-                          const Color(
-                              0xFF0B5D5E),
+                          thermoTeal,
                       foregroundColor:
                           Colors.white,
                       shape:
                           RoundedRectangleBorder(
                         borderRadius:
                             BorderRadius.circular(
-                                14),
+                          14,
+                        ),
                       ),
                     ),
                   ),
                 ),
 
-                const SizedBox(height: 20),
+                const SizedBox(
+                    height: 20),
               ],
             ),
           ),
         ),
       ),
-    );
-  }
-}
-
-// ============================================================
-// ALL ROUTE CARDS
-// ============================================================
-
-class _AllRouteCards
-    extends StatelessWidget {
-  final Map<String, dynamic> result;
-
-  const _AllRouteCards({
-    required this.result,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final rawOptions =
-        result['options'];
-
-    // Use every option returned by backend.
-    if (rawOptions is List &&
-        rawOptions.isNotEmpty) {
-      return Column(
-        children:
-            rawOptions.map<Widget>((item) {
-          final option =
-              Map<String, dynamic>.from(
-            item,
-          );
-
-          return _RouteCard(
-            route:
-                option['route']
-                        ?.toString() ??
-                    'Route',
-            time:
-                option['travel_time_min']
-                        ?.toString() ??
-                    '0',
-            distance:
-                option['distance_km']
-                        ?.toString() ??
-                    '0',
-            exposure:
-                option['thermal_exposure']
-                        ?.toString() ??
-                    '0',
-            reason:
-                option['reason']
-                        ?.toString() ??
-                    '',
-            recommended:
-                option['recommended'] == true,
-            valid:
-                option['valid'] == true,
-          );
-        }).toList(),
-      );
-    }
-
-    // Fallback for current API response.
-    final recommendation =
-        result['recommendation'] is Map
-            ? Map<String, dynamic>.from(
-                result['recommendation'],
-              )
-            : <String, dynamic>{};
-
-    return _RouteCard(
-      route: 'Recommended Route',
-      time:
-          recommendation[
-                      'travel_time_min']
-                  ?.toString() ??
-              '0',
-      distance:
-          recommendation['distance_km']
-                  ?.toString() ??
-              '0',
-      exposure:
-          recommendation[
-                      'thermal_exposure']
-                  ?.toString() ??
-              '0',
-      reason:
-          'Selected using the optimization constraints '
-          'and estimated thermal exposure.',
-      recommended: true,
-      valid: true,
     );
   }
 }
@@ -1299,6 +1573,7 @@ class _RouteCard
   final String reason;
   final bool recommended;
   final bool valid;
+  final bool withinExposureBudget;
 
   const _RouteCard({
     required this.route,
@@ -1308,30 +1583,31 @@ class _RouteCard
     required this.reason,
     required this.recommended,
     required this.valid,
+    required this.withinExposureBudget,
   });
 
   @override
-  Widget build(BuildContext context) {
-    const teal =
-        Color(0xFF0B5D5E);
-
+  Widget build(
+      BuildContext context) {
     return Container(
-      width: double.infinity,
+      width:
+          double.infinity,
       margin:
           const EdgeInsets.only(
         bottom: 14,
       ),
       padding:
           const EdgeInsets.all(18),
-      decoration: BoxDecoration(
+      decoration:
+          BoxDecoration(
         color: recommended
-            ? const Color(0xFFE4F4EF)
+            ? lightTeal
             : Colors.white,
         borderRadius:
             BorderRadius.circular(16),
         border: Border.all(
           color: recommended
-              ? teal
+              ? thermoTeal
               : Colors.grey.shade300,
           width:
               recommended ? 1.8 : 1,
@@ -1348,10 +1624,13 @@ class _RouteCard
                     ? Icons.check_circle
                     : Icons.alt_route,
                 color: recommended
-                    ? teal
+                    ? thermoTeal
                     : Colors.grey,
               ),
-              const SizedBox(width: 12),
+
+              const SizedBox(
+                  width: 12),
+
               Expanded(
                 child: Text(
                   route,
@@ -1363,24 +1642,31 @@ class _RouteCard
                   ),
                 ),
               ),
+
               if (recommended)
                 Container(
                   padding:
-                      const EdgeInsets.symmetric(
+                      const EdgeInsets
+                          .symmetric(
                     horizontal: 12,
                     vertical: 7,
                   ),
                   decoration:
                       BoxDecoration(
-                    color: teal,
+                    color:
+                        thermoTeal,
                     borderRadius:
                         BorderRadius.circular(
-                            20),
+                      20,
+                    ),
                   ),
-                  child: const Text(
+                  child:
+                      const Text(
                     'BEST',
-                    style: TextStyle(
-                      color: Colors.white,
+                    style:
+                        TextStyle(
+                      color:
+                          Colors.white,
                       fontWeight:
                           FontWeight.bold,
                       fontSize: 11,
@@ -1390,7 +1676,8 @@ class _RouteCard
             ],
           ),
 
-          const SizedBox(height: 18),
+          const SizedBox(
+              height: 18),
 
           Row(
             children: [
@@ -1404,20 +1691,24 @@ class _RouteCard
                       'Travel time',
                 ),
               ),
+
               Expanded(
                 child: _RouteMetric(
-                  icon: Icons.route,
+                  icon:
+                      Icons.route,
                   value:
                       '$distance km',
                   label:
                       'Distance',
                 ),
               ),
+
               Expanded(
                 child: _RouteMetric(
                   icon:
                       Icons.thermostat,
-                  value: exposure,
+                  value:
+                      exposure,
                   label:
                       'Exposure',
                 ),
@@ -1425,27 +1716,34 @@ class _RouteCard
             ],
           ),
 
-          const SizedBox(height: 14),
+          const SizedBox(
+              height: 14),
 
           Row(
             crossAxisAlignment:
                 CrossAxisAlignment.start,
             children: [
               Icon(
-                valid
+                valid &&
+                        withinExposureBudget
                     ? Icons
                         .check_circle_outline
                     : Icons.info_outline,
                 size: 20,
-                color: valid
-                    ? Colors.grey.shade600
+                color: valid &&
+                        withinExposureBudget
+                    ? Colors.green
                     : Colors.orange,
               ),
-              const SizedBox(width: 10),
+
+              const SizedBox(
+                  width: 10),
+
               Expanded(
                 child: Text(
                   reason,
-                  style: TextStyle(
+                  style:
+                      TextStyle(
                     color:
                         Colors.grey.shade700,
                     fontSize: 14,
@@ -1478,7 +1776,8 @@ class _RouteMetric
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+      BuildContext context) {
     return Row(
       crossAxisAlignment:
           CrossAxisAlignment.start,
@@ -1486,10 +1785,11 @@ class _RouteMetric
         Icon(
           icon,
           size: 21,
-          color:
-              const Color(0xFF0B5D5E),
+          color: thermoTeal,
         ),
+
         const SizedBox(width: 8),
+
         Flexible(
           child: Column(
             crossAxisAlignment:
@@ -1504,7 +1804,8 @@ class _RouteMetric
                       FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 3),
+              const SizedBox(
+                  height: 3),
               Text(
                 label,
                 style: TextStyle(
@@ -1538,17 +1839,18 @@ class _InfoItem
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+      BuildContext context) {
     return Row(
       mainAxisSize:
           MainAxisSize.min,
       children: [
         Icon(
           icon,
-          color:
-              const Color(0xFF0B5D5E),
+          color: thermoTeal,
         ),
-        const SizedBox(width: 8),
+        const SizedBox(
+            width: 8),
         Column(
           crossAxisAlignment:
               CrossAxisAlignment.start,
@@ -1592,7 +1894,8 @@ class _DecisionRow
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+      BuildContext context) {
     return Row(
       children: [
         Expanded(
@@ -1605,7 +1908,8 @@ class _DecisionRow
             ),
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(
+            width: 12),
         Text(
           value,
           style:
@@ -1624,7 +1928,8 @@ class _DecisionRow
 // MAP CARD
 // ============================================================
 
-class _MapCard extends StatelessWidget {
+class _MapCard
+    extends StatelessWidget {
   final List<LatLng> routePoints;
   final bool loading;
   final LatLng? start;
@@ -1640,141 +1945,135 @@ class _MapCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    final mapStart = start ?? defaultStart;
-    final mapDestination =
-        destination ?? defaultDestination;
+  Widget build(
+      BuildContext context) {
+    final mapStart =
+        start ?? defaultStart;
 
-    // Include the endpoints and route geometry so the
-    // complete journey fits inside the map.
+    final mapDestination =
+        destination ??
+            defaultDestination;
+
     final allPoints = <LatLng>[
       mapStart,
       mapDestination,
       ...routePoints,
     ];
 
-    final bounds = LatLngBounds.fromPoints(allPoints);
+    final bounds =
+        LatLngBounds.fromPoints(
+      allPoints,
+    );
 
     return Container(
       height: 380,
       width: double.infinity,
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
+      clipBehavior:
+          Clip.antiAlias,
+      decoration:
+          BoxDecoration(
+        borderRadius:
+            BorderRadius.circular(20),
         border: Border.all(
-          color: Colors.grey.shade300,
+          color:
+              Colors.grey.shade300,
         ),
       ),
       child: Stack(
         children: [
           FlutterMap(
-            options: MapOptions(
-              initialCameraFit: CameraFit.bounds(
+            options:
+                MapOptions(
+              initialCameraFit:
+                  CameraFit.bounds(
                 bounds: bounds,
-                padding: const EdgeInsets.all(55),
+                padding:
+                    const EdgeInsets.all(
+                  55,
+                ),
               ),
             ),
             children: [
-              // OpenStreetMap base map.
               TileLayer(
                 urlTemplate:
-                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    'https://tile.openstreetmap.org/'
+                    '{z}/{x}/{y}.png',
                 userAgentPackageName:
                     'com.thermoroute.app',
               ),
 
-              // Actual road route returned by OSRM.
-              if (routePoints.length >= 2)
+              if (routePoints.length >=
+                  2)
                 PolylineLayer(
                   polylines: [
                     Polyline(
-                      points: routePoints,
+                      points:
+                          routePoints,
                       strokeWidth: 8,
-                      color: const Color(0xFF0B5D5E),
-                      borderStrokeWidth: 2,
-                      borderColor: Colors.white,
+                      color:
+                          thermoTeal,
+                      borderStrokeWidth:
+                          2,
+                      borderColor:
+                          Colors.white,
                     ),
                   ],
                 ),
 
-              // Start and destination markers.
               MarkerLayer(
                 markers: [
                   Marker(
-                    point: mapStart,
+                    point:
+                        mapStart,
                     width: 82,
                     height: 82,
-                    alignment: Alignment.topCenter,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
+                    alignment:
+                        Alignment.topCenter,
+                    child:
+                        Column(
+                      mainAxisSize:
+                          MainAxisSize.min,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.blue.shade700,
-                            borderRadius: BorderRadius.circular(7),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.18),
-                                blurRadius: 5,
-                              ),
-                            ],
-                          ),
-                          child: const Text(
-                            'START',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                        _MapLabel(
+                          text:
+                              'START',
+                          color:
+                              Colors.blue.shade700,
                         ),
                         const Icon(
-                          Icons.location_on,
-                          color: Colors.blue,
+                          Icons
+                              .location_on,
+                          color:
+                              Colors.blue,
                           size: 40,
                         ),
                       ],
                     ),
                   ),
+
                   Marker(
-                    point: mapDestination,
+                    point:
+                        mapDestination,
                     width: 105,
                     height: 82,
-                    alignment: Alignment.topCenter,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
+                    alignment:
+                        Alignment.topCenter,
+                    child:
+                        Column(
+                      mainAxisSize:
+                          MainAxisSize.min,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.red.shade700,
-                            borderRadius: BorderRadius.circular(7),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.18),
-                                blurRadius: 5,
-                              ),
-                            ],
-                          ),
-                          child: const Text(
-                            'DESTINATION',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                        _MapLabel(
+                          text:
+                              'DESTINATION',
+                          color:
+                              Colors.red.shade700,
                         ),
                         const Icon(
-                          Icons.location_on,
-                          color: Colors.red,
+                          Icons
+                              .location_on,
+                          color:
+                              Colors.red,
                           size: 40,
                         ),
                       ],
@@ -1785,41 +2084,49 @@ class _MapCard extends StatelessWidget {
             ],
           ),
 
-          // Loading indicator.
           if (loading)
             Positioned(
               top: 14,
               right: 14,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
+              child:
+                  Container(
+                padding:
+                    const EdgeInsets
+                        .symmetric(
                   horizontal: 14,
                   vertical: 9,
                 ),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.12),
-                      blurRadius: 8,
-                    ),
-                  ],
+                decoration:
+                    BoxDecoration(
+                  color:
+                      Colors.white,
+                  borderRadius:
+                      BorderRadius.circular(
+                    20,
+                  ),
                 ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
+                child:
+                    const Row(
+                  mainAxisSize:
+                      MainAxisSize.min,
                   children: [
                     SizedBox(
                       width: 16,
                       height: 16,
-                      child: CircularProgressIndicator(
+                      child:
+                          CircularProgressIndicator(
                         strokeWidth: 2,
                       ),
                     ),
-                    SizedBox(width: 8),
+                    SizedBox(
+                        width: 8),
                     Text(
                       'Finding route...',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
+                      style:
+                          TextStyle(
+                        fontWeight:
+                            FontWeight
+                                .w600,
                       ),
                     ),
                   ],
@@ -1827,68 +2134,85 @@ class _MapCard extends StatelessWidget {
               ),
             ),
 
-          // Route legend.
-          if (!loading && routePoints.length >= 2)
-            Positioned(
-              top: 14,
-              left: 14,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 13,
-                  vertical: 9,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.12),
-                      blurRadius: 8,
-                    ),
-                  ],
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.route,
-                      size: 18,
-                      color: Color(0xFF0B5D5E),
-                    ),
-                    SizedBox(width: 7),
-                    Text(
-                      'Recommended route',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-          // Fallback/service message.
-          if (!loading && error != null)
+          if (!loading &&
+              error != null)
             Positioned(
               left: 12,
               right: 12,
               bottom: 12,
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.95),
-                  borderRadius: BorderRadius.circular(12),
+              child:
+                  Container(
+                padding:
+                    const EdgeInsets.all(
+                  10,
                 ),
-                child: Text(
+                decoration:
+                    BoxDecoration(
+                  color: Colors.white
+                      .withOpacity(
+                    0.95,
+                  ),
+                  borderRadius:
+                      BorderRadius.circular(
+                    12,
+                  ),
+                ),
+                child:
+                    Text(
                   error!,
-                  style: const TextStyle(
+                  style:
+                      const TextStyle(
                     fontSize: 11,
                   ),
-                  textAlign: TextAlign.center,
+                  textAlign:
+                      TextAlign.center,
                 ),
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// MAP LABEL
+// ============================================================
+
+class _MapLabel
+    extends StatelessWidget {
+  final String text;
+  final Color color;
+
+  const _MapLabel({
+    required this.text,
+    required this.color,
+  });
+
+  @override
+  Widget build(
+      BuildContext context) {
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(
+        horizontal: 8,
+        vertical: 4,
+      ),
+      decoration:
+          BoxDecoration(
+        color: color,
+        borderRadius:
+            BorderRadius.circular(7),
+      ),
+      child: Text(
+        text,
+        style:
+            const TextStyle(
+          color: Colors.white,
+          fontSize: 9,
+          fontWeight:
+              FontWeight.bold,
+        ),
       ),
     );
   }
