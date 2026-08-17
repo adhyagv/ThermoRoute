@@ -3,23 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.services.optimizer import optimize_journey_with_options
-
-
-# ============================================================
-# THERMOROUTE API
-# ============================================================
+from backend.services.temperature_provider import get_temperature_for_segment
 
 app = FastAPI(
     title="ThermoRoute API",
     description="Heat-aware route optimization API",
     version="1.0.0",
 )
-
-
-# ============================================================
-# CORS
-# Allows Flutter Web to communicate with FastAPI
-# ============================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,21 +20,6 @@ app.add_middleware(
 )
 
 
-# ============================================================
-# REQUEST MODEL
-# ============================================================
-
-class JourneyRequest(BaseModel):
-    from_location: str
-    destination: str
-    departure_time: str
-    max_extra_time_percent: int = 20
-
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
-
 @app.get("/")
 def home():
     return {
@@ -53,138 +28,134 @@ def home():
     }
 
 
-# ============================================================
-# OPTIMIZE ROUTE
-# ============================================================
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy",
+        "service": "ThermoRoute API",
+        "optimizer": "available",
+        "thermal_engine": "available",
+    }
+
+
+class JourneyRequest(BaseModel):
+    from_location: str
+    destination: str
+    departure_time: str
+    max_extra_time_percent: int = 20
+
 
 @app.post("/api/optimize")
 def optimize_route(request: JourneyRequest):
-
     # ========================================================
-    # DEMO ROUTE SCENARIOS
+    # PHOENIX, ARIZONA HACKATHON DEMO
+    # Downtown Phoenix -> Phoenix Sky Harbor
     #
-    # These will later be replaced with:
-    # - real routing data
-    # - FortyGuard heat data
-    # - real climate information
+    # Route A = fastest but hotter
+    # Route B = slightly slower and cooler -> recommended
+    # Route C = hottest and outside the time limit
     # ========================================================
 
     scenarios = [
-
-        # ----------------------------------------------------
-        # ROUTE A
-        # Fastest valid route
-        # ----------------------------------------------------
-
         {
             "route": "Route A",
             "departure_time": request.departure_time,
             "travel_time_min": 20,
-            "distance_km": 2.4,
-
+            "distance_km": 8.4,
             "segments": [
                 {
-                    "temperature": 36,
-                    "duration_minutes": 6,
+                    "latitude": 33.4484,
+                    "longitude": -112.0740,
+                    "temperature": 43,
+                    "duration_minutes": 7,
                 },
                 {
-                    "temperature": 38,
-                    "duration_minutes": 8,
+                    "latitude": 33.4415,
+                    "longitude": -112.0540,
+                    "temperature": 45,
+                    "duration_minutes": 7,
                 },
                 {
-                    "temperature": 35,
+                    "latitude": 33.4342,
+                    "longitude": -112.0116,
+                    "temperature": 42,
                     "duration_minutes": 6,
                 },
             ],
         },
-
-        # ----------------------------------------------------
-        # ROUTE B
-        # Recommended route
-        # ----------------------------------------------------
-
         {
             "route": "Route B",
             "departure_time": request.departure_time,
             "travel_time_min": 23,
-            "distance_km": 2.7,
-
+            "distance_km": 9.1,
             "segments": [
                 {
-                    "temperature": 32,
+                    "latitude": 33.4484,
+                    "longitude": -112.0740,
+                    "temperature": 38,
                     "duration_minutes": 8,
                 },
                 {
-                    "temperature": 33,
-                    "duration_minutes": 9,
+                    "latitude": 33.4380,
+                    "longitude": -112.0600,
+                    "temperature": 39,
+                    "duration_minutes": 8,
                 },
                 {
-                    "temperature": 31,
-                    "duration_minutes": 6,
+                    "latitude": 33.4342,
+                    "longitude": -112.0116,
+                    "temperature": 37,
+                    "duration_minutes": 7,
                 },
             ],
         },
-
-        # ----------------------------------------------------
-        # ROUTE C
-        # Lower thermal exposure but too slow
-        #
-        # This is important for the demo because it shows
-        # that ThermoRoute does not simply choose the route
-        # with the lowest exposure.
-        # ----------------------------------------------------
-
         {
             "route": "Route C",
             "departure_time": request.departure_time,
-            "travel_time_min": 25,
-            "distance_km": 3.1,
-
+            "travel_time_min": 26,
+            "distance_km": 10.0,
             "segments": [
                 {
-                    "temperature": 30,
-                    "duration_minutes": 8,
-                },
-                {
-                    "temperature": 31,
+                    "latitude": 33.4484,
+                    "longitude": -112.0740,
+                    "temperature": 47,
                     "duration_minutes": 9,
                 },
                 {
-                    "temperature": 30,
+                    "latitude": 33.4390,
+                    "longitude": -112.0480,
+                    "temperature": 49,
+                    "duration_minutes": 9,
+                },
+                {
+                    "latitude": 33.4342,
+                    "longitude": -112.0116,
+                    "temperature": 48,
                     "duration_minutes": 8,
                 },
             ],
         },
     ]
 
+    temperature_sources = set()
 
-    # ========================================================
-    # FASTEST AVAILABLE ROUTE
-    # ========================================================
+    for scenario in scenarios:
+        for segment in scenario["segments"]:
+            temperature_result = get_temperature_for_segment(
+                latitude=segment["latitude"],
+                longitude=segment["longitude"],
+                fallback_temperature=segment["temperature"],
+            )
+
+            segment["temperature"] = temperature_result["temperature"]
+            segment["temperature_source"] = temperature_result["source"]
+            temperature_sources.add(temperature_result["source"])
 
     fastest_time = min(
-        scenario["travel_time_min"]
-        for scenario in scenarios
+        scenario["travel_time_min"] for scenario in scenarios
     )
 
-
-    # ========================================================
-    # THERMAL EXPOSURE BUDGET
-    # ========================================================
-
     thermal_exposure_budget = 50
-
-
-    # ========================================================
-    # RUN OPTIMIZATION
-    #
-    # IMPORTANT:
-    # optimize_journey_with_options returns:
-    #
-    # 1. recommended route
-    # 2. all evaluated routes
-    # 3. constraint information
-    # ========================================================
 
     result = optimize_journey_with_options(
         scenarios=scenarios,
@@ -193,40 +164,17 @@ def optimize_route(request: JourneyRequest):
         thermal_exposure_budget=thermal_exposure_budget,
     )
 
-
-    # ========================================================
-    # API RESPONSE
-    # ========================================================
-
     return {
         "status": "success",
-
         "from": request.from_location,
-
         "destination": request.destination,
-
         "departure_time": request.departure_time,
-
+        "temperature_source": list(temperature_sources),
         "fastest_time": fastest_time,
-
-        "max_extra_time_percent": (
-            request.max_extra_time_percent
-        ),
-
-        "max_allowed_time": (
-            result["constraints"]["max_allowed_time_min"]
-        ),
-
-        "thermal_exposure_budget": (
-            result["constraints"]["thermal_exposure_budget"]
-        ),
-
-        # Recommended route
+        "max_extra_time_percent": request.max_extra_time_percent,
+        "max_allowed_time": result["constraints"]["max_allowed_time_min"],
+        "thermal_exposure_budget": result["constraints"]["thermal_exposure_budget"],
         "recommendation": result["recommended"],
-
-        # ALL routes
         "options": result["options"],
-
-        # Optimization constraints
         "constraints": result["constraints"],
     }

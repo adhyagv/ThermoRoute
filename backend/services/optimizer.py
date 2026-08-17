@@ -1,9 +1,8 @@
 from backend.services.thermal import calculate_route_exposure
 
 
-# ============================================================
+
 # MAXIMUM ALLOWED TRAVEL TIME
-# ============================================================
 
 def max_allowed_time(
     fastest_time,

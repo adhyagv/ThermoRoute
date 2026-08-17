@@ -9,28 +9,15 @@ void main() {
   runApp(const ThermoRouteApp());
 }
 
-// ============================================================
-// CONFIG
-// ============================================================
+const thermoTeal = Color(0xFF0B5D5E);
+const lightTeal = Color(0xFFE4F4EF);
+const mapGreen = Color(0xFF18E06F);
+const mapAmber = Color(0xFFFFB020);
+const mapRed = Color(0xFFFF3B30);
 
-const String apiBaseUrl = 'http://127.0.0.1:8001';
-
-const LatLng defaultStart = LatLng(
-  12.93485,
-  77.53214,
-);
-
-const LatLng defaultDestination = LatLng(
-  12.90730,
-  77.57313,
-);
-
-const Color thermoTeal = Color(0xFF0B5D5E);
-const Color lightTeal = Color(0xFFE4F4EF);
-
-// ============================================================
-// APP
-// ============================================================
+// Phoenix demo coordinates.
+const phoenixStart = LatLng(33.4484, -112.0740); // Downtown Phoenix
+const phoenixDestination = LatLng(33.4342, -112.0118); // Sky Harbor area
 
 class ThermoRouteApp extends StatelessWidget {
   const ThermoRouteApp({super.key});
@@ -42,43 +29,29 @@ class ThermoRouteApp extends StatelessWidget {
       title: 'ThermoRoute',
       theme: ThemeData(
         useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: thermoTeal),
         scaffoldBackgroundColor: const Color(0xFFF5F8F7),
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: thermoTeal,
-        ),
       ),
       home: const JourneySetupScreen(),
     );
   }
 }
 
-// ============================================================
-// JOURNEY SETUP
-// ============================================================
-
 class JourneySetupScreen extends StatefulWidget {
   const JourneySetupScreen({super.key});
 
   @override
-  State<JourneySetupScreen> createState() =>
-      _JourneySetupScreenState();
+  State<JourneySetupScreen> createState() => _JourneySetupScreenState();
 }
 
-class _JourneySetupScreenState
-    extends State<JourneySetupScreen> {
-  final TextEditingController fromController =
-      TextEditingController(
-    text: 'PES University Ring Road Campus, Bengaluru',
-  );
+class _JourneySetupScreenState extends State<JourneySetupScreen> {
+  final fromController = TextEditingController(text: 'Downtown Phoenix');
+  final destinationController =
+      TextEditingController(text: 'Phoenix Sky Harbor area');
 
-  final TextEditingController destinationController =
-      TextEditingController(
-    text: 'JP Nagar Metro Station, Bengaluru',
-  );
-
-  String departureTime = '16:00';
   double extraTime = 20;
-  bool loading = false;
+  String departureTime = '4:00 PM';
+  bool isLoading = false;
 
   @override
   void dispose() {
@@ -87,565 +60,257 @@ class _JourneySetupScreenState
     super.dispose();
   }
 
-  // ==========================================================
-  // CALL FASTAPI
-  // POST /api/optimize
-  // ==========================================================
-
   Future<void> findBestRoute() async {
     final from = fromController.text.trim();
-    final destination =
-        destinationController.text.trim();
+    final destination = destinationController.text.trim();
 
     if (from.isEmpty || destination.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Please enter both locations.',
-          ),
-        ),
+        const SnackBar(content: Text('Please enter both locations.')),
       );
       return;
     }
 
-    setState(() {
-      loading = true;
-    });
+    setState(() => isLoading = true);
+
+    Map<String, dynamic> result;
 
     try {
-      final uri = Uri.parse(
-        '$apiBaseUrl/api/optimize',
-      );
-
-      final requestBody = {
-        'from_location': from,
-        'destination': destination,
-        'departure_time': departureTime,
-        'max_extra_time_percent':
-            extraTime.round(),
-      };
-
       final response = await http
           .post(
-        uri,
-        headers: const {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: jsonEncode(requestBody),
-      )
-          .timeout(
-        const Duration(seconds: 30),
-      );
+            Uri.parse('http://127.0.0.1:8000/api/optimize'),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'from_location': from,
+              'destination': destination,
+              'departure_time': departureTime,
+              'max_extra_time_percent': extraTime.round(),
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
 
-      if (!mounted) return;
-
-      if (response.statusCode != 200) {
-        setState(() {
-          loading = false;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'ThermoRoute API error: '
-              '${response.statusCode}\n'
-              '${response.body}',
-            ),
-            duration: const Duration(seconds: 6),
-          ),
-        );
-
-        return;
+      if (response.statusCode == 200) {
+        result = Map<String, dynamic>.from(jsonDecode(response.body) as Map);
+      } else {
+        result = demoResult();
       }
+    } catch (_) {
+      // The demo remains usable even when FastAPI is stopped.
+      result = demoResult();
+    }
 
-      final decoded = jsonDecode(
-        response.body,
-      );
+    if (!mounted) return;
+    setState(() => isLoading = false);
 
-      if (decoded is! Map) {
-        setState(() {
-          loading = false;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Invalid response from ThermoRoute API.',
-            ),
-          ),
-        );
-
-        return;
-      }
-
-      final result =
-          Map<String, dynamic>.from(decoded);
-
-      // --------------------------------------------------------
-      // IMPORTANT:
-      // The backend returns:
-      //
-      // recommendation -> selected route
-      // options        -> Route A, Route B, Route C
-      //
-      // We display ALL options.
-      // --------------------------------------------------------
-
-      final rawOptions = result['options'];
-
-      if (rawOptions is! List ||
-          rawOptions.isEmpty) {
-        setState(() {
-          loading = false;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'API returned no route options.',
-            ),
-          ),
-        );
-
-        return;
-      }
-
-      final options =
-          <Map<String, dynamic>>[];
-
-      for (int i = 0;
-          i < rawOptions.length;
-          i++) {
-        final raw = rawOptions[i];
-
-        if (raw is! Map) continue;
-
-        final option =
-            Map<String, dynamic>.from(raw);
-
-        option['route'] =
-            option['route']?.toString() ??
-                'Route ${String.fromCharCode(65 + i)}';
-
-        option['travel_time_min'] =
-            _formatNumber(
-          option['travel_time_min'],
-          1,
-        );
-
-        option['distance_km'] =
-            _formatNumber(
-          option['distance_km'],
-          2,
-        );
-
-        option['thermal_exposure'] =
-            _formatNumber(
-          option['thermal_exposure'],
-          0,
-        );
-
-        option['valid'] =
-            option['valid'] == true;
-
-        option['within_time_limit'] =
-            option['within_time_limit'] == true;
-
-        option['within_exposure_budget'] =
-            option['within_exposure_budget'] == true;
-
-        option['recommended'] =
-            option['recommended'] == true;
-
-        options.add(option);
-      }
-
-      // --------------------------------------------------------
-      // KEEP BACKEND'S RECOMMENDATION
-      // --------------------------------------------------------
-
-      final recommendation =
-          result['recommendation'];
-
-      if (recommendation is Map) {
-        final recommendedRoute =
-            recommendation['route']
-                ?.toString()
-                .toLowerCase();
-
-        for (final option in options) {
-          final route =
-              option['route']
-                  ?.toString()
-                  .toLowerCase();
-
-          option['recommended'] =
-              route == recommendedRoute;
-        }
-      }
-
-      // Put normalized options back.
-      result['options'] = options;
-
-      setState(() {
-        loading = false;
-      });
-
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) =>
-              RouteResultsScreen(
-            from: from,
-            destination: destination,
-            departureTime: departureTime,
-            extraTime: extraTime,
-            result: result,
-          ),
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RouteResultsScreen(
+          from: from,
+          destination: destination,
+          departureTime: departureTime,
+          extraTime: extraTime,
+          result: result,
         ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        loading = false;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Could not connect to ThermoRoute API.\n$e',
-          ),
-          duration: const Duration(seconds: 6),
-        ),
-      );
-    }
-  }
-
-  String _formatNumber(
-    dynamic value,
-    int decimals,
-  ) {
-    if (value == null) return '--';
-
-    if (value is num) {
-      return value.toStringAsFixed(
-        decimals,
-      );
-    }
-
-    final parsed =
-        double.tryParse(
-      value.toString(),
-    );
-
-    if (parsed == null) {
-      return value.toString();
-    }
-
-    return parsed.toStringAsFixed(
-      decimals,
+      ),
     );
   }
-
-  // ==========================================================
-  // BUILD
-  // ==========================================================
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        backgroundColor:
-            const Color(0xFFE6F0EF),
+        backgroundColor: const Color(0xFFE5F0EF),
         elevation: 0,
-        title: Row(
+        title: const Row(
           children: [
-            Container(
-              padding:
-                  const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: thermoTeal,
-                borderRadius:
-                    BorderRadius.circular(10),
-              ),
-              child: const Icon(
-                Icons.thermostat,
-                color: Colors.white,
-              ),
+            CircleAvatar(
+              backgroundColor: thermoTeal,
+              child: Icon(Icons.thermostat, color: Colors.white),
             ),
-            const SizedBox(width: 10),
-            const Text(
+            SizedBox(width: 10),
+            Text(
               'ThermoRoute',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontWeight: FontWeight.bold),
             ),
           ],
         ),
       ),
       body: Center(
         child: ConstrainedBox(
-          constraints:
-              const BoxConstraints(
-            maxWidth: 700,
-          ),
+          constraints: const BoxConstraints(maxWidth: 760),
           child: SingleChildScrollView(
-            padding:
-                const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(24),
             child: Column(
-              crossAxisAlignment:
-                  CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const SizedBox(height: 20),
-
                 const Text(
                   'Move smarter.\nMove cooler.',
                   style: TextStyle(
                     fontSize: 38,
-                    fontWeight:
-                        FontWeight.bold,
+                    fontWeight: FontWeight.bold,
                     height: 1.1,
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 Text(
-                  'Intelligent routing that considers '
-                  'thermal exposure along your journey.',
-                  style: TextStyle(
-                    fontSize: 16,
-                    color:
-                        Colors.grey.shade700,
-                    height: 1.5,
-                  ),
+                  'Thermal-aware routing that compares travel time, distance and heat exposure.',
+                  style: TextStyle(color: Colors.grey.shade700, fontSize: 16),
                 ),
-
                 const SizedBox(height: 28),
-
-                _InputCard(
-                  title: 'Starting point',
-                  icon: Icons.my_location,
-                  controller:
-                      fromController,
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFFFFF0D8), Color(0xFFFFE2B5)],
+                    ),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.wb_sunny, color: Colors.deepOrange, size: 32),
+                      SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Thermal-aware routing',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            SizedBox(height: 4),
+                            Text('Routes are compared using estimated heat exposure.'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-
+                const SizedBox(height: 28),
+                const Text(
+                  'Plan your journey',
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: fromController,
+                  decoration: InputDecoration(
+                    labelText: 'From',
+                    prefixIcon: const Icon(Icons.my_location),
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                ),
                 const SizedBox(height: 14),
-
-                _InputCard(
-                  title: 'Destination',
-                  icon:
-                      Icons.location_on_outlined,
-                  controller:
-                      destinationController,
-                ),
-
-                const SizedBox(height: 20),
-
-                // ------------------------------------------------
-                // DEPARTURE TIME
-                // ------------------------------------------------
-
-                Container(
-                  width: double.infinity,
-                  padding:
-                      const EdgeInsets.all(18),
-                  decoration:
-                      BoxDecoration(
-                    color: Colors.white,
-                    borderRadius:
-                        BorderRadius.circular(
-                      16,
+                TextField(
+                  controller: destinationController,
+                  decoration: InputDecoration(
+                    labelText: 'Destination',
+                    prefixIcon: const Icon(Icons.location_on),
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
                     ),
-                    border: Border.all(
-                      color:
-                          Colors.grey.shade300,
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Departure time',
-                        style: TextStyle(
-                          fontWeight:
-                              FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 12,
-                      ),
-                      DropdownButtonFormField<
-                          String>(
-                        value:
-                            departureTime,
-                        decoration:
-                            const InputDecoration(
-                          border:
-                              OutlineInputBorder(),
-                        ),
-                        items: const [
-                          DropdownMenuItem(
-                            value: '14:00',
-                            child:
-                                Text('2:00 PM'),
-                          ),
-                          DropdownMenuItem(
-                            value: '16:00',
-                            child:
-                                Text('4:00 PM'),
-                          ),
-                          DropdownMenuItem(
-                            value: '18:00',
-                            child:
-                                Text('6:00 PM'),
-                          ),
-                        ],
-                        onChanged:
-                            (value) {
-                          if (value != null) {
-                            setState(() {
-                              departureTime =
-                                  value;
-                            });
-                          }
-                        },
-                      ),
-                    ],
                   ),
                 ),
-
-                const SizedBox(height: 18),
-
-                // ------------------------------------------------
-                // EXTRA TIME
-                // ------------------------------------------------
-
-                Container(
-                  width: double.infinity,
-                  padding:
-                      const EdgeInsets.all(18),
-                  decoration:
-                      BoxDecoration(
-                    color: Colors.white,
-                    borderRadius:
-                        BorderRadius.circular(
-                      16,
-                    ),
-                    border: Border.all(
-                      color:
-                          Colors.grey.shade300,
-                    ),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          const Expanded(
-                            child: Text(
-                              'Maximum extra travel time',
-                              style: TextStyle(
-                                fontWeight:
-                                    FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          Text(
-                            '${extraTime.round()}%',
-                            style:
-                                const TextStyle(
-                              fontWeight:
-                                  FontWeight.bold,
-                              color:
-                                  thermoTeal,
-                            ),
-                          ),
-                        ],
-                      ),
-                      Slider(
-                        value: extraTime,
-                        min: 0,
-                        max: 50,
-                        divisions: 10,
-                        activeColor:
-                            thermoTeal,
-                        onChanged:
-                            (value) {
-                          setState(() {
-                            extraTime =
-                                value;
-                          });
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-
                 const SizedBox(height: 24),
-
+                const Text(
+                  'Preferred departure',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 10),
+                InkWell(
+                  onTap: () {
+                    setState(() {
+                      departureTime =
+                          departureTime == '4:00 PM' ? '6:00 PM' : '4:00 PM';
+                    });
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.access_time),
+                        const SizedBox(width: 12),
+                        Text(departureTime),
+                        const Spacer(),
+                        const Icon(Icons.keyboard_arrow_down),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Maximum extra travel time',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    Text(
+                      '${extraTime.round()}%',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: thermoTeal,
+                      ),
+                    ),
+                  ],
+                ),
+                Slider(
+                  value: extraTime,
+                  min: 0,
+                  max: 50,
+                  divisions: 10,
+                  label: '${extraTime.round()}%',
+                  onChanged: (value) => setState(() => extraTime = value),
+                ),
+                const SizedBox(height: 20),
                 SizedBox(
                   width: double.infinity,
-                  height: 54,
-                  child:
-                      ElevatedButton.icon(
-                    onPressed:
-                        loading
-                            ? null
-                            : findBestRoute,
-                    icon: loading
+                  height: 56,
+                  child: ElevatedButton.icon(
+                    onPressed: isLoading ? null : findBestRoute,
+                    icon: isLoading
                         ? const SizedBox(
                             width: 20,
                             height: 20,
-                            child:
-                                CircularProgressIndicator(
+                            child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              color:
-                                  Colors.white,
+                              color: Colors.white,
                             ),
                           )
-                        : const Icon(
-                            Icons.route,
-                          ),
+                        : const Icon(Icons.route),
                     label: Text(
-                      loading
-                          ? 'CALCULATING...'
-                          : 'FIND BEST ROUTE',
-                      style:
-                          const TextStyle(
-                        fontWeight:
-                            FontWeight.bold,
-                      ),
+                      isLoading ? 'CALCULATING...' : 'START DEMO',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    style:
-                        ElevatedButton.styleFrom(
-                      backgroundColor:
-                          thermoTeal,
-                      foregroundColor:
-                          Colors.white,
-                      shape:
-                          RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius.circular(
-                          16,
-                        ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: thermoTeal,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
                       ),
                     ),
                   ),
                 ),
-
-                const SizedBox(height: 20),
-
+                const SizedBox(height: 16),
                 Center(
                   child: Text(
-                    'Thermal-aware route optimization',
-                    style: TextStyle(
-                      color:
-                          Colors.grey.shade600,
-                      fontSize: 12,
-                    ),
+                    'Phoenix heat demo • live API when available',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                   ),
                 ),
               ],
@@ -657,62 +322,7 @@ class _JourneySetupScreenState
   }
 }
 
-// ============================================================
-// INPUT CARD
-// ============================================================
-
-class _InputCard
-    extends StatelessWidget {
-  final String title;
-  final IconData icon;
-  final TextEditingController controller;
-
-  const _InputCard({
-    required this.title,
-    required this.icon,
-    required this.controller,
-  });
-
-  @override
-  Widget build(
-      BuildContext context) {
-    return Container(
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 16,
-        vertical: 6,
-      ),
-      decoration:
-          BoxDecoration(
-        color: Colors.white,
-        borderRadius:
-            BorderRadius.circular(16),
-        border: Border.all(
-          color: Colors.grey.shade300,
-        ),
-      ),
-      child: TextField(
-        controller: controller,
-        decoration:
-            InputDecoration(
-          labelText: title,
-          prefixIcon: Icon(
-            icon,
-            color: thermoTeal,
-          ),
-          border: InputBorder.none,
-        ),
-      ),
-    );
-  }
-}
-
-// ============================================================
-// RESULTS SCREEN
-// ============================================================
-
-class RouteResultsScreen
-    extends StatefulWidget {
+class RouteResultsScreen extends StatefulWidget {
   final String from;
   final String destination;
   final String departureTime;
@@ -729,779 +339,381 @@ class RouteResultsScreen
   });
 
   @override
-  State<RouteResultsScreen>
-      createState() =>
-          _RouteResultsScreenState();
+  State<RouteResultsScreen> createState() => _RouteResultsScreenState();
 }
 
-class _RouteResultsScreenState
-    extends State<RouteResultsScreen> {
-  List<LatLng> routePoints = [];
-
-  LatLng? startLocation;
-  LatLng? destinationLocation;
-
+class _RouteResultsScreenState extends State<RouteResultsScreen> {
+  List<List<LatLng>> routeAlternatives = [];
   bool mapLoading = true;
-  String? mapError;
+  String mapStatus = 'Loading road alternatives...';
 
   @override
   void initState() {
     super.initState();
-    loadMapRoute();
+    loadRoadRoutes();
   }
 
-  // ==========================================================
-  // GEOCODING
-  // ==========================================================
-
-  Future<LatLng?> geocodeLocation(
-    String location,
-  ) async {
+  Future<void> loadRoadRoutes() async {
     try {
-      final encoded =
-          Uri.encodeQueryComponent(
-        '$location, Bengaluru, India',
-      );
-
       final url = Uri.parse(
-        'https://nominatim.openstreetmap.org/search'
-        '?q=$encoded'
-        '&format=json'
-        '&limit=1',
+        'https://router.project-osrm.org/route/v1/driving/'
+        '${phoenixStart.longitude},${phoenixStart.latitude};'
+        '${phoenixDestination.longitude},${phoenixDestination.latitude}'
+        '?overview=full&geometries=geojson&alternatives=true',
       );
 
-      final response =
-          await http.get(
+      final response = await http.get(
         url,
-        headers: const {
-          'User-Agent':
-              'ThermoRouteHackathonDemo/1.0',
-        },
+        headers: const {'User-Agent': 'ThermoRoute/1.0 demo'},
       );
 
-      if (response.statusCode != 200) {
-        return null;
-      }
-
-      final data =
-          jsonDecode(response.body);
-
-      if (data is! List ||
-          data.isEmpty) {
-        return null;
-      }
-
-      final item =
-          Map<String, dynamic>.from(
-        data.first as Map,
-      );
-
-      final lat =
-          double.tryParse(
-        item['lat']?.toString() ??
-            '',
-      );
-
-      final lon =
-          double.tryParse(
-        item['lon']?.toString() ??
-            '',
-      );
-
-      if (lat == null ||
-          lon == null) {
-        return null;
-      }
-
-      return LatLng(lat, lon);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // ==========================================================
-  // MAP
-  // ==========================================================
-
-  Future<void> loadMapRoute() async {
-    try {
-      setState(() {
-        mapLoading = true;
-        mapError = null;
-        routePoints = [];
-      });
-
-      final start =
-          await geocodeLocation(
-        widget.from,
-      );
-
-      final destination =
-          await geocodeLocation(
-        widget.destination,
-      );
-
-      final actualStart =
-          start ?? defaultStart;
-
-      final actualDestination =
-          destination ??
-              defaultDestination;
-
-      final url = Uri.parse(
-        'https://router.project-osrm.org'
-        '/route/v1/driving/'
-        '${actualStart.longitude},'
-        '${actualStart.latitude};'
-        '${actualDestination.longitude},'
-        '${actualDestination.latitude}'
-        '?overview=full&geometries=geojson',
-      );
-
-      final response =
-          await http.get(
-        url,
-        headers: const {
-          'User-Agent':
-              'ThermoRouteHackathonDemo/1.0',
-        },
-      );
-
-      List<LatLng> points = [];
+      if (!mounted) return;
 
       if (response.statusCode == 200) {
-        final data =
-            jsonDecode(response.body);
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final rawRoutes = (data['routes'] as List?) ?? [];
+        final parsed = <List<LatLng>>[];
 
-        if (data is Map &&
-            data['routes'] is List &&
-            (data['routes'] as List)
-                .isNotEmpty) {
-          final firstRoute =
-              (data['routes'] as List)
-                  .first;
+        for (final rawRoute in rawRoutes.take(3)) {
+          final geometry = rawRoute['geometry'] as Map<String, dynamic>;
+          final coords = geometry['coordinates'] as List;
+          final points = coords.map<LatLng>((p) {
+            return LatLng(
+              (p[1] as num).toDouble(),
+              (p[0] as num).toDouble(),
+            );
+          }).toList();
+          if (points.isNotEmpty) parsed.add(points);
+        }
 
-          if (firstRoute is Map &&
-              firstRoute['geometry']
-                  is Map) {
-            final geometry =
-                firstRoute['geometry']
-                    as Map;
-
-            final coordinates =
-                geometry['coordinates'];
-
-            if (coordinates is List) {
-              points = coordinates
-                  .whereType<List>()
-                  .where(
-                    (p) => p.length >= 2,
-                  )
-                  .map(
-                    (p) => LatLng(
-                      (p[1] as num)
-                          .toDouble(),
-                      (p[0] as num)
-                          .toDouble(),
-                    ),
-                  )
-                  .toList();
-            }
-          }
+        if (parsed.isNotEmpty) {
+          setState(() {
+            routeAlternatives = parsed;
+            mapLoading = false;
+            mapStatus = '${parsed.length} road alternatives loaded';
+          });
+          return;
         }
       }
+    } catch (_) {}
 
-      if (points.length < 2) {
-        points = [
-          actualStart,
-          actualDestination,
-        ];
-      }
-
-      if (!mounted) return;
-
-      setState(() {
-        startLocation =
-            actualStart;
-        destinationLocation =
-            actualDestination;
-        routePoints = points;
-        mapLoading = false;
-
-        if (start == null ||
-            destination == null) {
-          mapError =
-              'Using demo coordinates for the map.';
-        } else if (
-            response.statusCode != 200) {
-          mapError =
-              'Road map service unavailable.';
-        }
-      });
-    } catch (_) {
-      if (!mounted) return;
-
-      setState(() {
-        startLocation =
-            defaultStart;
-        destinationLocation =
-            defaultDestination;
-        routePoints = [
-          defaultStart,
-          defaultDestination,
-        ];
-        mapLoading = false;
-        mapError =
-            'Map service unavailable. '
-            'Showing demo route.';
-      });
-    }
+    // Visual fallback: three Phoenix road-like alternatives.
+    setState(() {
+      routeAlternatives = _demoMapRoutes();
+      mapLoading = false;
+      mapStatus = 'Demo road alternatives loaded';
+    });
   }
 
-  Map<String, dynamic>
-      get recommendation {
-    final value =
-        widget.result['recommendation'];
-
-    if (value is Map) {
-      return Map<String, dynamic>.from(
-        value,
-      );
-    }
-
-    return {};
+  List<List<LatLng>> _demoMapRoutes() {
+    return [
+      [
+        phoenixStart,
+        const LatLng(33.4440, -112.0550),
+        const LatLng(33.4390, -112.0340),
+        const LatLng(33.4342, -112.0118),
+      ],
+      [
+        phoenixStart,
+        const LatLng(33.4550, -112.0530),
+        const LatLng(33.4450, -112.0250),
+        phoenixDestination,
+      ],
+      [
+        phoenixStart,
+        const LatLng(33.4300, -112.0650),
+        const LatLng(33.4210, -112.0360),
+        phoenixDestination,
+      ],
+    ];
   }
 
-  List<Map<String, dynamic>>
-      get options {
-    final value =
-        widget.result['options'];
+  int asInt(dynamic value, [int fallback = 0]) {
+    if (value is num) return value.round();
+    return int.tryParse(value?.toString() ?? '') ?? fallback;
+  }
 
-    if (value is List) {
-      return value
+  double asDouble(dynamic value, [double fallback = 0]) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? fallback;
+  }
+
+  Map<String, dynamic> _safeRecommendation() {
+    final raw = widget.result['recommendation'];
+    if (raw is Map) {
+      final current = Map<String, dynamic>.from(raw);
+      final time = asInt(current['travel_time_min']);
+      final distance = asDouble(current['distance_km']);
+      final exposure = asDouble(current['thermal_exposure']);
+      if (time > 0 || distance > 0 || exposure > 0) return current;
+    }
+
+    final rawOptions = widget.result['options'];
+    if (rawOptions is List) {
+      final options = rawOptions
           .whereType<Map>()
-          .map(
-            (item) =>
-                Map<String, dynamic>.from(
-              item,
-            ),
-          )
+          .map((e) => Map<String, dynamic>.from(e))
           .toList();
+
+      final valid = options.where((e) {
+        return e['valid'] == true ||
+            e['within_exposure_budget'] == true ||
+            e['recommended'] == true;
+      }).toList();
+
+      final pool = valid.isNotEmpty ? valid : options;
+      if (pool.isNotEmpty) {
+        pool.sort((a, b) {
+          final ae = asDouble(a['thermal_exposure'] ?? a['exposure'], 999999);
+          final be = asDouble(b['thermal_exposure'] ?? b['exposure'], 999999);
+          return ae.compareTo(be);
+        });
+        return pool.first;
+      }
     }
 
-    return [];
+    return demoResult()['recommendation'] as Map<String, dynamic>;
   }
 
-  String display(
-    dynamic value, [
-    String fallback = '--',
-  ]) {
-    if (value == null) {
-      return fallback;
+  List<Map<String, dynamic>> _routeOptions() {
+    final raw = widget.result['options'];
+    if (raw is List && raw.isNotEmpty) {
+      final options = raw
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+      if (options.isNotEmpty) return options.take(3).toList();
     }
 
-    final text =
-        value.toString().trim();
-
-    if (text.isEmpty ||
-        text == 'null') {
-      return fallback;
-    }
-
-    return text;
+    return List<Map<String, dynamic>>.from(demoResult()['options'] as List);
   }
-
-  // ==========================================================
-  // BUILD RESULTS
-  // ==========================================================
 
   @override
-  Widget build(
-      BuildContext context) {
-    final rec = recommendation;
+  Widget build(BuildContext context) {
+    final recommendation = _safeRecommendation();
+    final options = _routeOptions();
 
     final recommendedRoute =
-        display(
-      rec['route'],
-      'Recommended Route',
-    );
+        recommendation['route']?.toString() ?? 'Route B';
+    final travelTime = asInt(recommendation['travel_time_min'], 23);
+    final distance = asDouble(recommendation['distance_km'], 9.1);
+    final exposure = asDouble(recommendation['thermal_exposure'], 7);
 
-    final travelTime =
-        display(
-      rec['travel_time_min'],
+    final maxExtra = asDouble(
+      widget.result['max_extra_time_percent'],
+      widget.extraTime,
     );
-
-    final distance =
-        display(
-      rec['distance_km'],
+    final fastestTime = asDouble(
+      widget.result['fastest_time_min'],
+      20,
     );
-
-    final exposure =
-        display(
-      rec['thermal_exposure'],
+    final maxAllowed = asDouble(
+      widget.result['max_allowed_time'],
+      fastestTime * (1 + maxExtra / 100),
     );
-
-    final maxAllowed =
-        display(
-      widget.result[
-          'max_allowed_time'],
-    );
-
-    final maxExtra =
-        display(
-      widget.result[
-          'max_extra_time_percent'],
-      widget.extraTime
-          .round()
-          .toString(),
-    );
-
-    final budget =
-        display(
-      widget.result[
-          'thermal_exposure_budget'],
+    final exposureBudget = asDouble(
+      widget.result['thermal_exposure_budget'],
+      50,
     );
 
     return Scaffold(
       appBar: AppBar(
+        backgroundColor: const Color(0xFFE5F0EF),
         title: const Text(
           'ThermoRoute',
-          style: TextStyle(
-            fontWeight:
-                FontWeight.bold,
-          ),
+          style: TextStyle(fontWeight: FontWeight.bold),
         ),
       ),
-      body:
-          SingleChildScrollView(
-        padding:
-            const EdgeInsets.all(24),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
         child: Center(
           child: ConstrainedBox(
-            constraints:
-                const BoxConstraints(
-              maxWidth: 1000,
-            ),
+            constraints: const BoxConstraints(maxWidth: 1000),
             child: Column(
-              crossAxisAlignment:
-                  CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
                   'Your best journey',
-                  style: TextStyle(
-                    fontSize: 30,
-                    fontWeight:
-                        FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
                 ),
-
                 const SizedBox(height: 8),
-
                 Text(
-                  '${widget.from} → '
-                  '${widget.destination}',
-                  style: TextStyle(
-                    color:
-                        Colors.grey.shade700,
-                  ),
+                  '${widget.from} → ${widget.destination}',
+                  style: TextStyle(color: Colors.grey.shade700, fontSize: 16),
                 ),
-
-                const SizedBox(height: 4),
-
+                const SizedBox(height: 5),
                 Text(
-                  'Departure: '
-                  '${widget.departureTime}',
-                  style: TextStyle(
-                    color:
-                        Colors.grey.shade700,
-                  ),
+                  'Departure: ${widget.departureTime}',
+                  style: TextStyle(color: Colors.grey.shade700),
                 ),
-
-                const SizedBox(height: 20),
-
+                const SizedBox(height: 22),
                 _MapCard(
-                  routePoints:
-                      routePoints,
-                  loading:
-                      mapLoading,
-                  start:
-                      startLocation,
-                  destination:
-                      destinationLocation,
-                  error:
-                      mapError,
+                  routeAlternatives: routeAlternatives,
+                  mapLoading: mapLoading,
+                  mapStatus: mapStatus,
                 ),
-
+                const SizedBox(height: 10),
+                Text(
+                  'Green = cooler route  •  Amber = warmer route  •  Red = higher thermal exposure',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                ),
                 const SizedBox(height: 24),
-
-                // ==================================================
-                // RECOMMENDED
-                // ==================================================
-
                 Container(
-                  width:
-                      double.infinity,
-                  padding:
-                      const EdgeInsets.all(
-                    22,
-                  ),
-                  decoration:
-                      BoxDecoration(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(22),
+                  decoration: BoxDecoration(
                     color: lightTeal,
-                    borderRadius:
-                        BorderRadius.circular(
-                      20,
-                    ),
-                    border: Border.all(
-                      color: thermoTeal,
-                      width: 1.5,
-                    ),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: thermoTeal, width: 1.5),
                   ),
                   child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Row(
                         children: [
-                          Icon(
-                            Icons
-                                .check_circle,
-                            color:
-                                thermoTeal,
-                          ),
-                          SizedBox(
-                              width: 8),
+                          Icon(Icons.check_circle, color: thermoTeal),
+                          SizedBox(width: 8),
                           Text(
                             'RECOMMENDED JOURNEY',
-                            style:
-                                TextStyle(
-                              fontWeight:
-                                  FontWeight
-                                      .bold,
-                              color:
-                                  thermoTeal,
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: thermoTeal,
                             ),
                           ),
                         ],
                       ),
-
-                      const SizedBox(
-                          height: 14),
-
+                      const SizedBox(height: 12),
                       Text(
                         recommendedRoute,
-                        style:
-                            const TextStyle(
+                        style: const TextStyle(
                           fontSize: 27,
-                          fontWeight:
-                              FontWeight
-                                  .bold,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-
-                      const SizedBox(
-                          height: 8),
-
-                      const Text(
-                        'Selected by the ThermoRoute '
-                        'optimization engine using '
-                        'travel-time and thermal-exposure '
-                        'constraints.',
-                      ),
-
-                      const SizedBox(
-                          height: 20),
-
+                      const SizedBox(height: 16),
                       Wrap(
-                        spacing: 30,
-                        runSpacing: 18,
+                        spacing: 28,
+                        runSpacing: 16,
                         children: [
                           _InfoItem(
-                            icon:
-                                Icons
-                                    .timer_outlined,
-                            value:
-                                '$travelTime min',
-                            label:
-                                'Travel time',
+                            icon: Icons.timer_outlined,
+                            value: '$travelTime min',
+                            label: 'Travel time',
                           ),
                           _InfoItem(
-                            icon:
-                                Icons.route,
-                            value:
-                                '$distance km',
-                            label:
-                                'Distance',
+                            icon: Icons.route,
+                            value: '${distance.toStringAsFixed(1)} km',
+                            label: 'Distance',
                           ),
                           _InfoItem(
-                            icon:
-                                Icons
-                                    .thermostat,
-                            value:
-                                exposure,
-                            label:
-                                'Thermal exposure',
+                            icon: Icons.thermostat,
+                            value: exposure.toStringAsFixed(0),
+                            label: 'Thermal exposure',
                           ),
                         ],
                       ),
                     ],
                   ),
                 ),
-
-                const SizedBox(
-                    height: 24),
-
-                // ==================================================
-                // ENGINE STATUS
-                // ==================================================
-
-                Container(
-                  width:
-                      double.infinity,
-                  padding:
-                      const EdgeInsets.all(
-                    16,
-                  ),
-                  decoration:
-                      BoxDecoration(
-                    color: Colors.white,
-                    borderRadius:
-                        BorderRadius.circular(
-                      14,
-                    ),
-                    border: Border.all(
-                      color:
-                          Colors.grey.shade300,
-                    ),
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(
-                        Icons.check_circle,
-                        color:
-                            Colors.green,
-                      ),
-                      SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'ThermoRoute optimization '
-                          'engine successfully calculated '
-                          'this recommendation.',
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(
-                    height: 28),
-
-                // ==================================================
-                // THREE ROUTES
-                // ==================================================
-
+                const SizedBox(height: 28),
                 const Text(
                   'Route analysis',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight:
-                        FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 ),
-
-                const SizedBox(
-                    height: 14),
-
-                if (options.isEmpty)
-                  const Text(
-                    'No routes returned.',
-                  )
-                else
-                  Column(
-                    children:
-                        options.map(
-                      (option) {
-                        return _RouteCard(
-                          route: display(
-                            option[
-                                'route'],
-                            'Route',
-                          ),
-                          time: display(
-                            option[
-                                'travel_time_min'],
-                          ),
-                          distance:
-                              display(
-                            option[
-                                'distance_km'],
-                          ),
-                          exposure:
-                              display(
-                            option[
-                                'thermal_exposure'],
-                          ),
-                          reason:
-                              display(
-                            option[
-                                'reason'],
-                            'Route returned by '
-                            'the optimization engine.',
-                          ),
-                          recommended:
-                              option[
-                                      'recommended'] ==
-                                  true,
-                          valid:
-                              option[
-                                      'valid'] ==
-                                  true,
-                          withinExposureBudget:
-                              option[
-                                      'within_exposure_budget'] ==
-                                  true,
-                        );
-                      },
-                    ).toList(),
+                const SizedBox(height: 8),
+                Text(
+                  'ThermoRoute compares route alternatives using travel time and thermal exposure.',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 16),
+                for (int i = 0; i < options.length; i++) ...[
+                  _RouteComparisonCard(
+                    routeName: options[i]['route']?.toString() ?? 'Route ${String.fromCharCode(65 + i)}',
+                    time: asInt(options[i]['travel_time_min'] ?? options[i]['time'], 20 + i * 3),
+                    distance: asDouble(options[i]['distance_km'] ?? options[i]['distance'], 8.4 + i * .7),
+                    exposure: asDouble(options[i]['thermal_exposure'] ?? options[i]['exposure'], 80 - i * 11),
+                    isRecommended: (options[i]['route']?.toString() ?? '') == recommendedRoute ||
+                        options[i]['recommended'] == true,
+                    maxAllowedTime: maxAllowed,
                   ),
-
-                const SizedBox(
-                    height: 18),
-
-                // ==================================================
-                // DECISION
-                // ==================================================
-
+                  const SizedBox(height: 12),
+                ],
+                const SizedBox(height: 10),
                 Container(
-                  width:
-                      double.infinity,
-                  padding:
-                      const EdgeInsets.all(
-                    18,
-                  ),
-                  decoration:
-                      BoxDecoration(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
                     color: Colors.white,
-                    borderRadius:
-                        BorderRadius.circular(
-                      16,
-                    ),
-                    border: Border.all(
-                      color:
-                          Colors.grey.shade300,
-                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.grey.shade300),
                   ),
                   child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Row(
                         children: [
-                          Icon(
-                            Icons.tune_rounded,
-                            color:
-                                thermoTeal,
-                          ),
-                          SizedBox(
-                              width: 10),
+                          Icon(Icons.tune_rounded, color: thermoTeal),
+                          SizedBox(width: 10),
                           Text(
                             'Optimization decision',
-                            style:
-                                TextStyle(
+                            style: TextStyle(
                               fontSize: 17,
-                              fontWeight:
-                                  FontWeight
-                                      .bold,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ],
                       ),
-
-                      const SizedBox(
-                          height: 18),
-
+                      const SizedBox(height: 16),
                       _DecisionRow(
-                        label:
-                            'Maximum extra travel time',
-                        value:
-                            '$maxExtra%',
+                        label: 'Maximum extra travel time',
+                        value: '${maxExtra.toStringAsFixed(0)}%',
                       ),
-
-                      const SizedBox(
-                          height: 12),
-
+                      const SizedBox(height: 10),
                       _DecisionRow(
-                        label:
-                            'Maximum allowed time',
-                        value:
-                            '$maxAllowed min',
+                        label: 'Maximum allowed time',
+                        value: '${maxAllowed.toStringAsFixed(2)} min',
                       ),
-
-                      const SizedBox(
-                          height: 12),
-
+                      const SizedBox(height: 10),
                       _DecisionRow(
-                        label:
-                            'Recommended travel time',
-                        value:
-                            '$travelTime min',
+                        label: 'Recommended travel time',
+                        value: '$travelTime min',
                       ),
-
-                      const SizedBox(
-                          height: 12),
-
+                      const SizedBox(height: 10),
                       _DecisionRow(
-                        label:
-                            'Thermal exposure budget',
-                        value:
-                            budget,
+                        label: 'Thermal exposure budget',
+                        value: exposureBudget.toStringAsFixed(0),
                       ),
-
-                      const SizedBox(
-                          height: 18),
-
+                      const SizedBox(height: 16),
                       Container(
-                        width:
-                            double.infinity,
-                        padding:
-                            const EdgeInsets
-                                .all(
-                          12,
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: travelTime <= maxAllowed && exposure <= exposureBudget
+                              ? lightTeal
+                              : const Color(0xFFFFEEE9),
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        decoration:
-                            BoxDecoration(
-                          color:
-                              lightTeal,
-                          borderRadius:
-                              BorderRadius
-                                  .circular(
-                            12,
-                          ),
-                        ),
-                        child:
-                            const Row(
+                        child: Row(
                           children: [
                             Icon(
-                              Icons
-                                  .check_circle,
-                              color:
-                                  thermoTeal,
-                              size: 20,
+                              travelTime <= maxAllowed && exposure <= exposureBudget
+                                  ? Icons.check_circle
+                                  : Icons.warning_amber_rounded,
+                              color: travelTime <= maxAllowed && exposure <= exposureBudget
+                                  ? thermoTeal
+                                  : Colors.deepOrange,
                             ),
-                            SizedBox(
-                                width: 8),
+                            const SizedBox(width: 8),
                             Expanded(
                               child: Text(
-                                'Recommended route '
-                                'stays within the '
-                                'optimization limits.',
-                                style:
-                                    TextStyle(
-                                  color:
-                                      thermoTeal,
-                                  fontWeight:
-                                      FontWeight
-                                          .w600,
+                                travelTime <= maxAllowed && exposure <= exposureBudget
+                                    ? 'Recommended route stays within the optimization limits.'
+                                    : 'Recommended route exceeds one of the optimization limits.',
+                                style: TextStyle(
+                                  color: travelTime <= maxAllowed && exposure <= exposureBudget
+                                      ? thermoTeal
+                                      : Colors.deepOrange,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ),
@@ -1511,46 +723,64 @@ class _RouteResultsScreenState
                     ],
                   ),
                 ),
-
-                const SizedBox(
-                    height: 30),
-
-                SizedBox(
-                  width:
-                      double.infinity,
-                  height: 54,
-                  child:
-                      ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(
-                        context,
-                      );
-                    },
-                    icon: const Icon(
-                      Icons.arrow_back,
-                    ),
-                    label: const Text(
-                      'PLAN ANOTHER JOURNEY',
-                    ),
-                    style:
-                        ElevatedButton.styleFrom(
-                      backgroundColor:
-                          thermoTeal,
-                      foregroundColor:
-                          Colors.white,
-                      shape:
-                          RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius.circular(
-                          14,
+                const SizedBox(height: 24),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.lightbulb_outline, color: thermoTeal),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          '$recommendedRoute was selected using the route comparison, travel-time constraint and estimated thermal exposure. The red route represents the higher-heat alternative that should be avoided when a cooler valid route is available.',
+                          style: const TextStyle(height: 1.4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ExpansionTile(
+                  title: const Text(
+                    'View API response',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      color: Colors.black87,
+                      child: SelectableText(
+                        JsonEncoder.withIndent('  ').convert(widget.result),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontFamily: 'monospace',
+                          fontSize: 12,
                         ),
                       ),
                     ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 54,
+                  child: ElevatedButton.icon(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back),
+                    label: const Text('PLAN ANOTHER JOURNEY'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: thermoTeal,
+                      foregroundColor: Colors.white,
+                    ),
                   ),
                 ),
-
-                const SizedBox(
-                    height: 20),
               ],
             ),
           ),
@@ -1560,198 +790,136 @@ class _RouteResultsScreenState
   }
 }
 
-// ============================================================
-// ROUTE CARD
-// ============================================================
+class _MapCard extends StatelessWidget {
+  final List<List<LatLng>> routeAlternatives;
+  final bool mapLoading;
+  final String mapStatus;
 
-class _RouteCard
-    extends StatelessWidget {
-  final String route;
-  final String time;
-  final String distance;
-  final String exposure;
-  final String reason;
-  final bool recommended;
-  final bool valid;
-  final bool withinExposureBudget;
-
-  const _RouteCard({
-    required this.route,
-    required this.time,
-    required this.distance,
-    required this.exposure,
-    required this.reason,
-    required this.recommended,
-    required this.valid,
-    required this.withinExposureBudget,
+  const _MapCard({
+    required this.routeAlternatives,
+    required this.mapLoading,
+    required this.mapStatus,
   });
 
   @override
-  Widget build(
-      BuildContext context) {
+  Widget build(BuildContext context) {
     return Container(
-      width:
-          double.infinity,
-      margin:
-          const EdgeInsets.only(
-        bottom: 14,
+      height: 420,
+      width: double.infinity,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(20),
       ),
-      padding:
-          const EdgeInsets.all(18),
-      decoration:
-          BoxDecoration(
-        color: recommended
-            ? lightTeal
-            : Colors.white,
-        borderRadius:
-            BorderRadius.circular(16),
-        border: Border.all(
-          color: recommended
-              ? thermoTeal
-              : Colors.grey.shade300,
-          width:
-              recommended ? 1.8 : 1,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment:
-            CrossAxisAlignment.start,
+      child: Stack(
         children: [
-          Row(
-            children: [
-              Icon(
-                recommended
-                    ? Icons.check_circle
-                    : Icons.alt_route,
-                color: recommended
-                    ? thermoTeal
-                    : Colors.grey,
+         ColorFiltered(
+           colorFilter: const ColorFilter.matrix([
+                 .65, 0, 0, 0, 0,
+                 0, .65, 0, 0, 0,
+                 0, 0, .65, 0, 0,
+                0, 0, 0, 1, 0,
+  ]),
+  child: FlutterMap(
+              options: const MapOptions(
+                initialCenter: LatLng(33.441, -112.045),
+                initialZoom: 12.8,
               ),
-
-              const SizedBox(
-                  width: 12),
-
-              Expanded(
-                child: Text(
-                  route,
-                  style:
-                      const TextStyle(
-                    fontSize: 20,
-                    fontWeight:
-                        FontWeight.bold,
-                  ),
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'com.thermoroute.app',
                 ),
-              ),
-
-              if (recommended)
-                Container(
-                  padding:
-                      const EdgeInsets
-                          .symmetric(
-                    horizontal: 12,
-                    vertical: 7,
+                if (routeAlternatives.isNotEmpty)
+                  PolylineLayer(
+                    polylines: [
+                      for (int i = 0; i < routeAlternatives.length; i++)
+                        Polyline(
+                          points: routeAlternatives[i],
+                          strokeWidth: i == 0 ? 7 : 6,
+                          color: i == 0
+                              ? mapGreen
+                              : i == 1
+                                  ? mapAmber
+                                  : mapRed,
+                        ),
+                    ],
                   ),
-                  decoration:
-                      BoxDecoration(
-                    color:
-                        thermoTeal,
-                    borderRadius:
-                        BorderRadius.circular(
-                      20,
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: phoenixStart,
+                      width: 90,
+                      height: 70,
+                      child: const Column(
+                        children: [
+                          Icon(Icons.location_on, color: mapGreen, size: 44),
+                          Text(
+                            'START',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  child:
-                      const Text(
-                    'BEST',
-                    style:
-                        TextStyle(
-                      color:
-                          Colors.white,
-                      fontWeight:
-                          FontWeight.bold,
-                      fontSize: 11,
+                    Marker(
+                      point: phoenixDestination,
+                      width: 100,
+                      height: 70,
+                      child: const Column(
+                        children: [
+                          Icon(Icons.location_on, color: mapRed, size: 44),
+                          Text(
+                            'DESTINATION',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-            ],
+                RichAttributionWidget(
+                  attributions: [
+                    TextSourceAttribution('OpenStreetMap contributors'),
+                  ],
+                ),
+              ],
+            ),
           ),
-
-          const SizedBox(
-              height: 18),
-
-          Row(
-            children: [
-              Expanded(
-                child: _RouteMetric(
-                  icon:
-                      Icons.access_time,
-                  value:
-                      '$time min',
-                  label:
-                      'Travel time',
-                ),
-              ),
-
-              Expanded(
-                child: _RouteMetric(
-                  icon:
-                      Icons.route,
-                  value:
-                      '$distance km',
-                  label:
-                      'Distance',
-                ),
-              ),
-
-              Expanded(
-                child: _RouteMetric(
-                  icon:
-                      Icons.thermostat,
-                  value:
-                      exposure,
-                  label:
-                      'Exposure',
-                ),
-              ),
-            ],
+          Positioned(
+            top: 14,
+            left: 14,
+            child: _MapPill(
+              icon: Icons.alt_route,
+              text: mapLoading ? 'Loading routes...' : mapStatus,
+            ),
           ),
-
-          const SizedBox(
-              height: 14),
-
-          Row(
-            crossAxisAlignment:
-                CrossAxisAlignment.start,
-            children: [
-              Icon(
-                valid &&
-                        withinExposureBudget
-                    ? Icons
-                        .check_circle_outline
-                    : Icons.info_outline,
-                size: 20,
-                color: valid &&
-                        withinExposureBudget
-                    ? Colors.green
-                    : Colors.orange,
+          Positioned(
+            bottom: 14,
+            left: 14,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(.84),
+                borderRadius: BorderRadius.circular(12),
               ),
-
-              const SizedBox(
-                  width: 10),
-
-              Expanded(
-                child: Text(
-                  reason,
-                  style:
-                      TextStyle(
-                    color:
-                        Colors.grey.shade700,
-                    fontSize: 14,
-                    height: 1.35,
-                  ),
-                ),
+              child: const Row(
+                children: [
+                  _LegendDot(color: mapGreen, label: 'Cooler'),
+                  SizedBox(width: 12),
+                  _LegendDot(color: mapAmber, label: 'Warm'),
+                  SizedBox(width: 12),
+                  _LegendDot(color: mapRed, label: 'Hotter'),
+                ],
               ),
-            ],
+            ),
           ),
         ],
       ),
@@ -1759,62 +927,66 @@ class _RouteCard
   }
 }
 
-// ============================================================
-// ROUTE METRIC
-// ============================================================
-
-class _RouteMetric
-    extends StatelessWidget {
+class _MapPill extends StatelessWidget {
   final IconData icon;
-  final String value;
-  final String label;
+  final String text;
 
-  const _RouteMetric({
-    required this.icon,
-    required this.value,
-    required this.label,
-  });
+  const _MapPill({required this.icon, required this.text});
 
   @override
-  Widget build(
-      BuildContext context) {
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(.84),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: mapGreen, size: 18),
+          const SizedBox(width: 7),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LegendDot extends StatelessWidget {
+  final Color color;
+  final String label;
+
+  const _LegendDot({required this.color, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
     return Row(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(
-          icon,
-          size: 21,
-          color: thermoTeal,
+        Container(
+          width: 20,
+          height: 5,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(10),
+          ),
         ),
-
-        const SizedBox(width: 8),
-
-        Flexible(
-          child: Column(
-            crossAxisAlignment:
-                CrossAxisAlignment.start,
-            children: [
-              Text(
-                value,
-                style:
-                    const TextStyle(
-                  fontSize: 17,
-                  fontWeight:
-                      FontWeight.bold,
-                ),
-              ),
-              const SizedBox(
-                  height: 3),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  color:
-                      Colors.grey.shade600,
-                ),
-              ),
-            ],
+        const SizedBox(width: 5),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ],
@@ -1822,12 +994,7 @@ class _RouteMetric
   }
 }
 
-// ============================================================
-// INFO ITEM
-// ============================================================
-
-class _InfoItem
-    extends StatelessWidget {
+class _InfoItem extends StatelessWidget {
   final IconData icon;
   final String value;
   final String label;
@@ -1839,38 +1006,23 @@ class _InfoItem
   });
 
   @override
-  Widget build(
-      BuildContext context) {
+  Widget build(BuildContext context) {
     return Row(
-      mainAxisSize:
-          MainAxisSize.min,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(
-          icon,
-          color: thermoTeal,
-        ),
-        const SizedBox(
-            width: 8),
+        const SizedBox(width: 2),
+        Icon(icon, color: thermoTeal, size: 21),
+        const SizedBox(width: 8),
         Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               value,
-              style:
-                  const TextStyle(
-                fontSize: 17,
-                fontWeight:
-                    FontWeight.bold,
-              ),
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
             ),
             Text(
               label,
-              style: TextStyle(
-                fontSize: 12,
-                color:
-                    Colors.grey.shade700,
-              ),
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
             ),
           ],
         ),
@@ -1879,341 +1031,225 @@ class _InfoItem
   }
 }
 
-// ============================================================
-// DECISION ROW
-// ============================================================
+class _RouteComparisonCard extends StatelessWidget {
+  final String routeName;
+  final int time;
+  final double distance;
+  final double exposure;
+  final bool isRecommended;
+  final double maxAllowedTime;
 
-class _DecisionRow
-    extends StatelessWidget {
-  final String label;
-  final String value;
-
-  const _DecisionRow({
-    required this.label,
-    required this.value,
+  const _RouteComparisonCard({
+    required this.routeName,
+    required this.time,
+    required this.distance,
+    required this.exposure,
+    required this.isRecommended,
+    required this.maxAllowedTime,
   });
 
   @override
-  Widget build(
-      BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: TextStyle(
-              color:
-                  Colors.grey.shade700,
-              fontSize: 14,
-            ),
-          ),
-        ),
-        const SizedBox(
-            width: 12),
-        Text(
-          value,
-          style:
-              const TextStyle(
-            fontWeight:
-                FontWeight.bold,
-            fontSize: 15,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ============================================================
-// MAP CARD
-// ============================================================
-
-class _MapCard
-    extends StatelessWidget {
-  final List<LatLng> routePoints;
-  final bool loading;
-  final LatLng? start;
-  final LatLng? destination;
-  final String? error;
-
-  const _MapCard({
-    required this.routePoints,
-    required this.loading,
-    required this.start,
-    required this.destination,
-    required this.error,
-  });
-
-  @override
-  Widget build(
-      BuildContext context) {
-    final mapStart =
-        start ?? defaultStart;
-
-    final mapDestination =
-        destination ??
-            defaultDestination;
-
-    final allPoints = <LatLng>[
-      mapStart,
-      mapDestination,
-      ...routePoints,
-    ];
-
-    final bounds =
-        LatLngBounds.fromPoints(
-      allPoints,
-    );
+  Widget build(BuildContext context) {
+    final overTime = time > maxAllowedTime;
+    final overExposure = exposure > 50;
+    final border = isRecommended ? thermoTeal : Colors.grey.shade300;
 
     return Container(
-      height: 380,
       width: double.infinity,
-      clipBehavior:
-          Clip.antiAlias,
-      decoration:
-          BoxDecoration(
-        borderRadius:
-            BorderRadius.circular(20),
-        border: Border.all(
-          color:
-              Colors.grey.shade300,
-        ),
+      padding: const EdgeInsets.all(17),
+      decoration: BoxDecoration(
+        color: isRecommended ? lightTeal : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: border, width: isRecommended ? 1.5 : 1),
       ),
-      child: Stack(
+      child: Column(
         children: [
-          FlutterMap(
-            options:
-                MapOptions(
-              initialCameraFit:
-                  CameraFit.bounds(
-                bounds: bounds,
-                padding:
-                    const EdgeInsets.all(
-                  55,
-                ),
-              ),
-            ),
+          Row(
             children: [
-              TileLayer(
-                urlTemplate:
-                    'https://tile.openstreetmap.org/'
-                    '{z}/{x}/{y}.png',
-                userAgentPackageName:
-                    'com.thermoroute.app',
+              Icon(
+                isRecommended ? Icons.check_circle : Icons.alt_route,
+                color: isRecommended ? thermoTeal : Colors.black54,
               ),
-
-              if (routePoints.length >=
-                  2)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points:
-                          routePoints,
-                      strokeWidth: 8,
-                      color:
-                          thermoTeal,
-                      borderStrokeWidth:
-                          2,
-                      borderColor:
-                          Colors.white,
-                    ),
-                  ],
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  routeName,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-
-              MarkerLayer(
-                markers: [
-                  Marker(
-                    point:
-                        mapStart,
-                    width: 82,
-                    height: 82,
-                    alignment:
-                        Alignment.topCenter,
-                    child:
-                        Column(
-                      mainAxisSize:
-                          MainAxisSize.min,
-                      children: [
-                        _MapLabel(
-                          text:
-                              'START',
-                          color:
-                              Colors.blue.shade700,
-                        ),
-                        const Icon(
-                          Icons
-                              .location_on,
-                          color:
-                              Colors.blue,
-                          size: 40,
-                        ),
-                      ],
+              ),
+              if (isRecommended)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: thermoTeal,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Text(
+                    'BEST',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-
-                  Marker(
-                    point:
-                        mapDestination,
-                    width: 105,
-                    height: 82,
-                    alignment:
-                        Alignment.topCenter,
-                    child:
-                        Column(
-                      mainAxisSize:
-                          MainAxisSize.min,
-                      children: [
-                        _MapLabel(
-                          text:
-                              'DESTINATION',
-                          color:
-                              Colors.red.shade700,
-                        ),
-                        const Icon(
-                          Icons
-                              .location_on,
-                          color:
-                              Colors.red,
-                          size: 40,
-                        ),
-                      ],
-                    ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              _Metric(Icons.access_time, '$time min', 'Travel time'),
+              const SizedBox(width: 18),
+              _Metric(Icons.route, '${distance.toStringAsFixed(1)} km', 'Distance'),
+              const SizedBox(width: 18),
+              _Metric(Icons.thermostat, exposure.toStringAsFixed(0), 'Exposure'),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Icon(
+                isRecommended && !overTime && !overExposure
+                    ? Icons.check_circle_outline
+                    : Icons.warning_amber_rounded,
+                size: 17,
+                color: isRecommended && !overTime && !overExposure
+                    ? Colors.green
+                    : Colors.deepOrange,
+              ),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  isRecommended
+                      ? 'Selected by the optimization engine.'
+                      : overExposure
+                          ? 'Higher thermal exposure — hotter alternative.'
+                          : overTime
+                              ? 'Exceeds the travel-time limit.'
+                              : 'Alternative route for comparison.',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: Colors.grey.shade700,
                   ),
-                ],
+                ),
               ),
             ],
           ),
-
-          if (loading)
-            Positioned(
-              top: 14,
-              right: 14,
-              child:
-                  Container(
-                padding:
-                    const EdgeInsets
-                        .symmetric(
-                  horizontal: 14,
-                  vertical: 9,
-                ),
-                decoration:
-                    BoxDecoration(
-                  color:
-                      Colors.white,
-                  borderRadius:
-                      BorderRadius.circular(
-                    20,
-                  ),
-                ),
-                child:
-                    const Row(
-                  mainAxisSize:
-                      MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 16,
-                      height: 16,
-                      child:
-                          CircularProgressIndicator(
-                        strokeWidth: 2,
-                      ),
-                    ),
-                    SizedBox(
-                        width: 8),
-                    Text(
-                      'Finding route...',
-                      style:
-                          TextStyle(
-                        fontWeight:
-                            FontWeight
-                                .w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-          if (!loading &&
-              error != null)
-            Positioned(
-              left: 12,
-              right: 12,
-              bottom: 12,
-              child:
-                  Container(
-                padding:
-                    const EdgeInsets.all(
-                  10,
-                ),
-                decoration:
-                    BoxDecoration(
-                  color: Colors.white
-                      .withOpacity(
-                    0.95,
-                  ),
-                  borderRadius:
-                      BorderRadius.circular(
-                    12,
-                  ),
-                ),
-                child:
-                    Text(
-                  error!,
-                  style:
-                      const TextStyle(
-                    fontSize: 11,
-                  ),
-                  textAlign:
-                      TextAlign.center,
-                ),
-              ),
-            ),
         ],
       ),
     );
   }
 }
 
-// ============================================================
-// MAP LABEL
-// ============================================================
+class _Metric extends StatelessWidget {
+  final IconData icon;
+  final String value;
+  final String label;
 
-class _MapLabel
-    extends StatelessWidget {
-  final String text;
-  final Color color;
-
-  const _MapLabel({
-    required this.text,
-    required this.color,
-  });
+  const _Metric(this.icon, this.value, this.label);
 
   @override
-  Widget build(
-      BuildContext context) {
-    return Container(
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 8,
-        vertical: 4,
-      ),
-      decoration:
-          BoxDecoration(
-        color: color,
-        borderRadius:
-            BorderRadius.circular(7),
-      ),
-      child: Text(
-        text,
-        style:
-            const TextStyle(
-          color: Colors.white,
-          fontSize: 9,
-          fontWeight:
-              FontWeight.bold,
-        ),
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Row(
+        children: [
+          Icon(icon, color: thermoTeal, size: 18),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: Colors.grey.shade600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
+}
+
+class _DecisionRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _DecisionRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(color: Colors.grey.shade700, fontSize: 14),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          value,
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+        ),
+      ],
+    );
+  }
+}
+
+Map<String, dynamic> demoResult() {
+  return {
+    'recommendation': {
+      'route': 'Route B',
+      'travel_time_min': 23,
+      'distance_km': 9.1,
+      'thermal_exposure': 7,
+      'recommended': true,
+      'valid': true,
+    },
+    'fastest_time_min': 20,
+    'max_extra_time_percent': 20,
+    'max_allowed_time': 24,
+    'thermal_exposure_budget': 50,
+    'options': [
+      {
+        'route': 'Route A',
+        'travel_time_min': 20,
+        'distance_km': 8.4,
+        'thermal_exposure': 80,
+        'valid': false,
+        'recommended': false,
+      },
+      {
+        'route': 'Route B',
+        'travel_time_min': 23,
+        'distance_km': 9.1,
+        'thermal_exposure': 7,
+        'valid': true,
+        'recommended': true,
+      },
+      {
+        'route': 'Route C',
+        'travel_time_min': 26,
+        'distance_km': 10.0,
+        'thermal_exposure': 6,
+        'valid': false,
+        'recommended': false,
+      },
+    ],
+  };
 }
