@@ -1,45 +1,128 @@
-def calculate_segment_exposure(temperature, duration_minutes):
+def clamp(value, minimum=0, maximum=100):
+    return max(minimum, min(maximum, value))
+
+
+def calculate_segment_exposure(
+    temperature,
+    duration_minutes,
+    heat_index=None,
+    apparent_temperature=None,
+    wet_bulb_temperature=None,
+):
     """
-    Calculate estimated thermal exposure for one route segment.
+    Calculate thermal exposure for one journey segment.
 
-    This is a relative modeling score, not a medical risk measurement.
+    Priority:
+    1. Heat Index
+    2. Apparent Temperature
+    3. Wet Bulb Temperature
+    4. Raw Temperature
+
+    This is an explainable exposure score,
+    not a medical risk prediction.
     """
 
-    if temperature <= 30:
-        heat_factor = 1
-    elif temperature <= 35:
-        heat_factor = 2
-    elif temperature <= 40:
-        heat_factor = 3
-    else:
-        heat_factor = 4
+    effective_temperature = temperature
 
-    return heat_factor * duration_minutes
+    if heat_index is not None:
+        effective_temperature = heat_index
+
+    elif apparent_temperature is not None:
+        effective_temperature = apparent_temperature
+
+    elif wet_bulb_temperature is not None:
+        effective_temperature = wet_bulb_temperature
+
+    baseline = 25
+
+    thermal_intensity = max(
+        0,
+        effective_temperature - baseline
+    )
+
+    exposure = (
+        thermal_intensity
+        * duration_minutes
+        / 10
+    )
+
+    return round(exposure, 2)
 
 
 def calculate_route_exposure(segments):
     """
-    Calculate total estimated thermal exposure for a route.
+    Calculate total thermal exposure for a journey.
+    Final score is normalized between 0 and 100.
     """
 
     total_exposure = 0
 
     for segment in segments:
-        exposure = calculate_segment_exposure(
-            segment["temperature"],
-            segment["duration_minutes"]
+
+        total_exposure += calculate_segment_exposure(
+            temperature=segment.get(
+                "temperature",
+                0
+            ),
+            duration_minutes=segment.get(
+                "duration_minutes",
+                0
+            ),
+            heat_index=segment.get(
+                "heat_index"
+            ),
+            apparent_temperature=segment.get(
+                "apparent_temperature"
+            ),
+            wet_bulb_temperature=segment.get(
+                "wet_bulb_temperature"
+            ),
         )
 
-        total_exposure += exposure
+    return round(
+        clamp(total_exposure),
+        2
+    )
 
-    return round(total_exposure, 2)
-if __name__ == "__main__":
-    route_a = [
-        {"temperature": 36, "duration_minutes": 5},
-        {"temperature": 38, "duration_minutes": 6},
-        {"temperature": 34, "duration_minutes": 5},
-    ]
 
-    exposure = calculate_route_exposure(route_a)
+def exposure_level(score):
 
-    print("Estimated thermal exposure:", exposure)
+    score = clamp(score)
+
+    if score < 30:
+        return "LOW"
+
+    if score < 50:
+        return "MODERATE"
+
+    if score < 70:
+        return "HIGH"
+
+    return "EXTREME"
+
+
+def explain_exposure(score):
+
+    level = exposure_level(score)
+
+    explanations = {
+
+        "LOW":
+            "Low estimated thermal exposure.",
+
+        "MODERATE":
+            "Moderate estimated thermal exposure. "
+            "Consider reducing prolonged outdoor exposure.",
+
+        "HIGH":
+            "High estimated thermal exposure. "
+            "Consider taking a cooling break or "
+            "choosing a lower-exposure journey.",
+
+        "EXTREME":
+            "Extreme estimated thermal exposure. "
+            "Consider avoiding prolonged outdoor exposure "
+            "and finding a cooler location.",
+    }
+
+    return explanations[level]

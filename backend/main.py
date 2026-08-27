@@ -2,179 +2,365 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from backend.services.optimizer import optimize_journey_with_options
-from backend.services.temperature_provider import get_temperature_for_segment
+
+from backend.services.optimizer import optimize_journey
+
+from backend.services.routing import (
+    build_route_scenarios,
+    create_demo_routes,
+)
+
+from backend.services.fortyguard import (
+    FortyGuardClient,
+    FortyGuardError,
+)
+
+
+# =========================================================
+# APP
+# =========================================================
 
 app = FastAPI(
     title="ThermoRoute API",
-    description="Heat-aware route optimization API",
-    version="1.0.0",
+    description=(
+        "Heat-aware route and departure-time "
+        "optimization powered by FortyGuard."
+    ),
+    version="3.0.0",
 )
+
+
+# =========================================================
+# CORS
+# =========================================================
+
+# =========================================================
+# CORS
+# =========================================================
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# =========================================================
+# FORTYGUARD
+# =========================================================
+
+fortyguard = FortyGuardClient()
 
 
-@app.get("/")
-def home():
-    return {
-        "message": "ThermoRoute API is running",
-        "status": "success",
-    }
-
-
-@app.get("/health")
-def health():
-    return {
-        "status": "healthy",
-        "service": "ThermoRoute API",
-        "optimizer": "available",
-        "thermal_engine": "available",
-    }
-
+# =========================================================
+# REQUEST MODELS
+# =========================================================
 
 class JourneyRequest(BaseModel):
     from_location: str
     destination: str
     departure_time: str
     max_extra_time_percent: int = 20
+    thermal_exposure_budget: float = 50
 
+
+class HeatRequest(BaseModel):
+    latitude: float
+    longitude: float
+    temperature: float
+    date: str
+    start_time: str = "14:00"
+
+
+# =========================================================
+# HOME
+# =========================================================
+
+@app.get("/")
+def home():
+    return {
+        "message": "ThermoRoute API is running",
+        "status": "success",
+        "version": "3.0.0",
+        "fortyguard": True,
+        "routing": "Demo Arizona Routes",
+    }
+
+
+# =========================================================
+# HEALTH
+# =========================================================
+
+@app.get("/api/health")
+def health():
+    return {
+        "status": "healthy",
+        "service": "ThermoRoute API",
+        "fortyguard": True,
+    }
+
+
+# =========================================================
+# FORTYGUARD ENVIRONMENT
+# =========================================================
+
+@app.post("/api/fortyguard/environment")
+def environmental_parameters(request: HeatRequest):
+
+    try:
+
+        result = fortyguard.get_environmental_parameters(
+            latitude=request.latitude,
+            longitude=request.longitude,
+            temperature=request.temperature,
+            start_date=request.date,
+            start_time=request.start_time,
+            analysis=[
+                "heat_index_celsius",
+                "apparent_temperature_celsius",
+                "relative_humidity_percent",
+            ],
+        )
+
+        return {
+            "status": "success",
+            "data": result,
+        }
+
+    except FortyGuardError as error:
+
+        return {
+            "status": "error",
+            "message": str(error),
+        }
+
+    except Exception as error:
+
+        return {
+            "status": "error",
+            "message": f"Unexpected error: {error}",
+        }
+
+
+# =========================================================
+# FORTYGUARD STATUS
+# =========================================================
+
+@app.get("/api/fortyguard/status/{activity_id}")
+def fortyguard_status(activity_id: str):
+
+    try:
+
+        result = fortyguard.get_status(
+            activity_id
+        )
+
+        return {
+            "status": "success",
+            "data": result,
+        }
+
+    except FortyGuardError as error:
+
+        return {
+            "status": "error",
+            "message": str(error),
+        }
+
+    except Exception as error:
+
+        return {
+            "status": "error",
+            "message": f"Unexpected error: {error}",
+        }
+
+
+# =========================================================
+# ROUTE OPTIMIZATION
+# =========================================================
 
 @app.post("/api/optimize")
 def optimize_route(request: JourneyRequest):
-    # ========================================================
-    # PHOENIX, ARIZONA HACKATHON DEMO
-    # Downtown Phoenix -> Phoenix Sky Harbor
-    #
-    # Route A = fastest but hotter
-    # Route B = slightly slower and cooler -> recommended
-    # Route C = hottest and outside the time limit
-    # ========================================================
 
-    scenarios = [
-        {
-            "route": "Route A",
-            "departure_time": request.departure_time,
-            "travel_time_min": 20,
-            "distance_km": 8.4,
-            "segments": [
-                {
-                    "latitude": 33.4484,
-                    "longitude": -112.0740,
-                    "temperature": 43,
-                    "duration_minutes": 7,
-                },
-                {
-                    "latitude": 33.4415,
-                    "longitude": -112.0540,
-                    "temperature": 45,
-                    "duration_minutes": 7,
-                },
-                {
-                    "latitude": 33.4342,
-                    "longitude": -112.0116,
-                    "temperature": 42,
-                    "duration_minutes": 6,
-                },
-            ],
-        },
-        {
-            "route": "Route B",
-            "departure_time": request.departure_time,
-            "travel_time_min": 23,
-            "distance_km": 9.1,
-            "segments": [
-                {
-                    "latitude": 33.4484,
-                    "longitude": -112.0740,
-                    "temperature": 38,
-                    "duration_minutes": 8,
-                },
-                {
-                    "latitude": 33.4380,
-                    "longitude": -112.0600,
-                    "temperature": 39,
-                    "duration_minutes": 8,
-                },
-                {
-                    "latitude": 33.4342,
-                    "longitude": -112.0116,
-                    "temperature": 37,
-                    "duration_minutes": 7,
-                },
-            ],
-        },
-        {
-            "route": "Route C",
-            "departure_time": request.departure_time,
-            "travel_time_min": 26,
-            "distance_km": 10.0,
-            "segments": [
-                {
-                    "latitude": 33.4484,
-                    "longitude": -112.0740,
-                    "temperature": 47,
-                    "duration_minutes": 9,
-                },
-                {
-                    "latitude": 33.4390,
-                    "longitude": -112.0480,
-                    "temperature": 49,
-                    "duration_minutes": 9,
-                },
-                {
-                    "latitude": 33.4342,
-                    "longitude": -112.0116,
-                    "temperature": 48,
-                    "duration_minutes": 8,
-                },
-            ],
-        },
-    ]
+    try:
 
-    temperature_sources = set()
+        print()
+        print("=" * 60)
+        print("THERMOROUTE OPTIMIZATION STARTED")
+        print("=" * 60)
 
-    for scenario in scenarios:
-        for segment in scenario["segments"]:
-            temperature_result = get_temperature_for_segment(
-                latitude=segment["latitude"],
-                longitude=segment["longitude"],
-                fallback_temperature=segment["temperature"],
+        print(
+            f"From: {request.from_location}"
+        )
+
+        print(
+            f"Destination: {request.destination}"
+        )
+
+        print(
+            f"Departure: {request.departure_time}"
+        )
+
+        print(
+            f"Extra time allowed: "
+            f"{request.max_extra_time_percent}%"
+        )
+
+        print(
+            f"Thermal budget: "
+            f"{request.thermal_exposure_budget}"
+        )
+
+        # -------------------------------------------------
+        # BUILD ROUTES
+        # -------------------------------------------------
+
+        scenarios = build_route_scenarios(
+            from_location=request.from_location,
+            destination=request.destination,
+            departure_time=request.departure_time,
+        )
+
+        print(
+            f"Routes generated: {len(scenarios)}"
+        )
+
+        # -------------------------------------------------
+        # CHECK ROUTES
+        # -------------------------------------------------
+
+        if not scenarios:
+
+            return {
+                "status": "error",
+                "message": "No routes available.",
+            }
+
+        # -------------------------------------------------
+        # FIND FASTEST ROUTE
+        # -------------------------------------------------
+
+        fastest_time = min(
+            scenario.get(
+                "travel_time_min",
+                0,
             )
+            for scenario in scenarios
+        )
 
-            segment["temperature"] = temperature_result["temperature"]
-            segment["temperature_source"] = temperature_result["source"]
-            temperature_sources.add(temperature_result["source"])
+        print(
+            f"Fastest route: "
+            f"{fastest_time} minutes"
+        )
 
-    fastest_time = min(
-        scenario["travel_time_min"] for scenario in scenarios
-    )
+        # -------------------------------------------------
+        # OPTIMIZE
+        # -------------------------------------------------
 
-    thermal_exposure_budget = 50
+        result = optimize_journey(
+            scenarios=scenarios,
+            fastest_time=fastest_time,
+            max_extra_time_percent=(
+                request.max_extra_time_percent
+            ),
+            thermal_exposure_budget=(
+                request.thermal_exposure_budget
+            ),
+        )
 
-    result = optimize_journey_with_options(
-        scenarios=scenarios,
-        fastest_time=fastest_time,
-        max_extra_time_percent=request.max_extra_time_percent,
-        thermal_exposure_budget=thermal_exposure_budget,
-    )
+        print(
+            "Optimization completed."
+        )
 
-    return {
-        "status": "success",
-        "from": request.from_location,
-        "destination": request.destination,
-        "departure_time": request.departure_time,
-        "temperature_source": list(temperature_sources),
-        "fastest_time": fastest_time,
-        "max_extra_time_percent": request.max_extra_time_percent,
-        "max_allowed_time": result["constraints"]["max_allowed_time_min"],
-        "thermal_exposure_budget": result["constraints"]["thermal_exposure_budget"],
-        "recommendation": result["recommended"],
-        "options": result["options"],
-        "constraints": result["constraints"],
-    }
+        # -------------------------------------------------
+        # RETURN RESULT
+        # -------------------------------------------------
+
+        response = {
+            "status": "success",
+
+            "from": request.from_location,
+
+            "destination": request.destination,
+
+            "departure_time": request.departure_time,
+
+            "max_extra_time_percent": (
+                request.max_extra_time_percent
+            ),
+
+            "thermal_exposure_budget": (
+                request.thermal_exposure_budget
+            ),
+
+            "fastest_time": fastest_time,
+
+            "routes_evaluated": len(scenarios),
+
+            "recommendation": result,
+        }
+
+        print(
+            "THERMOROUTE OPTIMIZATION FINISHED"
+        )
+
+        print("=" * 60)
+
+        return response
+
+    except FortyGuardError as error:
+
+        print(
+            "FORTYGUARD ERROR:",
+            repr(error),
+        )
+
+        return {
+            "status": "error",
+            "message": (
+                "FortyGuard environmental "
+                f"analysis failed: {error}"
+            ),
+        }
+
+    except Exception as error:
+
+        print(
+            "OPTIMIZATION ERROR:",
+            repr(error),
+        )
+
+        return {
+            "status": "error",
+            "message": f"Unexpected error: {error}",
+        }
+
+
+# =========================================================
+# TEST ROUTES
+# =========================================================
+
+@app.get("/api/routes")
+def get_test_routes():
+
+    try:
+
+        routes = create_demo_routes(
+            origin="Phoenix, Arizona",
+            destination="Tempe, Arizona",
+            departure_time="10:00",
+        )
+
+        return {
+            "status": "success",
+            "origin": "Phoenix, Arizona",
+            "destination": "Tempe, Arizona",
+            "routes": routes,
+        }
+
+    except Exception as error:
+
+        return {
+            "status": "error",
+            "message": f"Unexpected error: {error}",
+        }

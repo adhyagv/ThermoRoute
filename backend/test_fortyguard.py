@@ -1,6 +1,8 @@
 import os
 import json
 import requests
+from dotenv import load_dotenv
+load_dotenv()
 
 
 API_KEY = os.getenv("FORTYGUARD_API_KEY")
