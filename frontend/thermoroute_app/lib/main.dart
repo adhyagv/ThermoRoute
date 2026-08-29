@@ -2203,7 +2203,7 @@ class _ThermoRouteHomeState extends State<ThermoRouteHome> {
       width: 210,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.72),
+        color: Colors.white.withValues(alpha:0.72),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: const Color(0xFFE7CCAF),
