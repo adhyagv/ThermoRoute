@@ -1,0 +1,12 @@
+{
+  "created_at": 1788003984.5479636,
+  "ttl_seconds": 3600,
+  "value": {
+    "temperature": 35.0,
+    "source": "fortyguard",
+    "activity_id": "b0436e47-0e01-4f1b-8773-b5e4b47bb802",
+    "ghi": 272.19,
+    "dni": 608.41,
+    "dhi": 62.67
+  }
+}
