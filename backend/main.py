@@ -10,6 +10,8 @@ from backend.services.routing import (
     create_demo_routes,
 )
 
+from backend.services.osrm import RoutingError
+
 from backend.services.fortyguard import (
     FortyGuardClient,
     FortyGuardError,
@@ -60,7 +62,7 @@ class JourneyRequest(BaseModel):
     from_location: str
     destination: str
     departure_time: str
-    max_extra_time_percent: int = 20
+    max_extra_time_percent: float = 20
     thermal_exposure_budget: float = 50
 
 
@@ -83,7 +85,7 @@ def home():
         "status": "success",
         "version": "3.0.0",
         "fortyguard": True,
-        "routing": "Demo Arizona Routes",
+        "routing": "OSRM driving (OpenStreetMap)",
     }
 
 
@@ -298,6 +300,8 @@ def optimize_route(request: JourneyRequest):
             "routes_evaluated": len(scenarios),
 
             "recommendation": result,
+
+            "all_routes": result.get("all_routes", []),
         }
 
         print(
@@ -308,19 +312,17 @@ def optimize_route(request: JourneyRequest):
 
         return response
 
-    except FortyGuardError as error:
+    except RoutingError as error:
 
         print(
-            "FORTYGUARD ERROR:",
+            "ROUTING ERROR:",
             repr(error),
         )
 
         return {
             "status": "error",
-            "message": (
-                "FortyGuard environmental "
-                f"analysis failed: {error}"
-            ),
+            "routing_error": True,
+            "message": str(error),
         }
 
     except Exception as error:

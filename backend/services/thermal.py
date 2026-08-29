@@ -126,3 +126,67 @@ def explain_exposure(score):
     }
 
     return explanations[level]
+
+
+def _format_number(value):
+    rounded = round(value, 1)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return str(rounded)
+
+
+def build_why_this_route(
+    recommended,
+    fastest,
+    other_routes=None,
+):
+    """
+    Build an explanation from real route metrics. Never uses
+    hardcoded extra minutes or exposure deltas.
+    """
+    rec_time = recommended.get("travel_time_min", 0)
+    rec_exposure = recommended.get("thermal_exposure", 0)
+    fast_time = fastest.get("travel_time_min", rec_time)
+    fast_exposure = fastest.get("thermal_exposure", rec_exposure)
+
+    extra_minutes = rec_time - fast_time
+    exposure_reduction = fast_exposure - rec_exposure
+
+    if extra_minutes > 0.05 and exposure_reduction > 0.05:
+        return (
+            f"This route adds {_format_number(extra_minutes)} minutes "
+            f"but reduces thermal exposure by "
+            f"{_format_number(exposure_reduction)} points "
+            "while remaining within your time constraint."
+        )
+
+    if extra_minutes <= 0.05:
+        hottest = None
+        for route in other_routes or []:
+            if route is recommended:
+                continue
+            if hottest is None or route.get(
+                "thermal_exposure", 0
+            ) > hottest.get("thermal_exposure", 0):
+                hottest = route
+
+        if hottest is not None:
+            cooler_by = hottest.get("thermal_exposure", 0) - rec_exposure
+            if cooler_by > 0.05:
+                return (
+                    "This is the fastest route among those returned "
+                    "and still meets your time constraint. "
+                    "It also reduces thermal exposure by "
+                    f"{_format_number(cooler_by)} points compared "
+                    "with the highest-exposure alternative."
+                )
+
+        return (
+            "This is the fastest route among those returned "
+            "and still meets your time constraint."
+        )
+
+    return (
+        "This route remains within your time constraint "
+        f"with a thermal exposure of {_format_number(rec_exposure)}."
+    )

@@ -2,6 +2,7 @@
 
 from datetime import datetime
 
+from .osrm import geocode_location, fetch_osrm_routes
 from .temperature_provider import get_temperature_for_segment
 from .thermal import (
     calculate_route_exposure,
@@ -291,6 +292,18 @@ def generate_route_scenarios(
             )
         )
 
+        for extra_key in (
+            "geometry",
+            "route_source",
+            "origin_lat",
+            "origin_lon",
+            "destination_lat",
+            "destination_lon",
+            "route_id",
+        ):
+            if extra_key in enriched_route:
+                scenario[extra_key] = enriched_route[extra_key]
+
         scenarios.append(
             scenario
         )
@@ -302,21 +315,131 @@ def generate_route_scenarios(
 # BUILD ROUTE SCENARIOS
 # ============================================================
 
+def _sample_geometry_points(coordinates, sample_count=4):
+    """
+    Pick a small number of GeoJSON [lon, lat] vertices for
+    FortyGuard lookups. Never invents coordinates.
+    """
+    if not coordinates:
+        return []
+
+    unique = []
+    seen = set()
+    for pair in coordinates:
+        if len(pair) < 2:
+            continue
+        key = (round(pair[0], 5), round(pair[1], 5))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(pair)
+
+    if not unique:
+        return []
+
+    count = min(sample_count, len(unique))
+    if count == 1:
+        return unique[:1]
+
+    sampled = []
+    last_index = len(unique) - 1
+    for i in range(count):
+        index = round(i * last_index / (count - 1))
+        point = unique[index]
+        if not sampled or sampled[-1] is not point:
+            sampled.append(point)
+
+    return sampled
+
+
+def osrm_routes_to_thermoroute(
+    origin_label,
+    destination_label,
+    origin_point,
+    destination_point,
+    departure_time,
+    osrm_routes,
+):
+    """
+    Convert real OSRM alternatives into ThermoRoute route dicts
+    with a small set of environmental sample segments.
+    """
+    routes = []
+
+    for osrm_route in osrm_routes:
+        geometry = osrm_route["geometry"]
+        coordinates = geometry["coordinates"]
+        samples = _sample_geometry_points(coordinates, sample_count=4)
+
+        duration_min = round(osrm_route["duration_s"] / 60.0, 1)
+        distance_km = round(osrm_route["distance_m"] / 1000.0, 2)
+
+        segment_count = max(len(samples), 1)
+        duration_each = round(duration_min / segment_count, 2)
+
+        segments = []
+        for index, pair in enumerate(samples):
+            longitude, latitude = pair[0], pair[1]
+            segments.append(
+                {
+                    "location": f"Sample {index + 1}",
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "temperature": 35,
+                    "duration_minutes": duration_each,
+                    "hazards": [],
+                }
+            )
+
+        routes.append(
+            {
+                "route": [
+                    origin_label,
+                    osrm_route["route_id"],
+                    destination_label,
+                ],
+                "route_id": osrm_route["route_id"],
+                "travel_time_min": duration_min,
+                "distance_km": distance_km,
+                "departure_time": departure_time,
+                "hazards": [],
+                "segments": segments,
+                "geometry": geometry,
+                "route_source": osrm_route["route_source"],
+                "origin_lat": origin_point["latitude"],
+                "origin_lon": origin_point["longitude"],
+                "destination_lat": destination_point["latitude"],
+                "destination_lon": destination_point["longitude"],
+            }
+        )
+
+    return routes
+
+
 def build_route_scenarios(
     from_location,
     destination,
     departure_time,
 ):
     """
-    Build route scenarios for ThermoRoute.
-
-    Currently uses Arizona demo routes.
+    Build route scenarios from live OSRM driving alternatives.
     """
 
-    routes = create_demo_routes(
-        origin=from_location,
-        destination=destination,
+    origin_point = geocode_location(from_location)
+    destination_point = geocode_location(destination)
+
+    osrm_routes = fetch_osrm_routes(
+        origin=origin_point,
+        destination=destination_point,
+    )
+
+    routes = osrm_routes_to_thermoroute(
+        origin_label=from_location,
+        destination_label=destination,
+        origin_point=origin_point,
+        destination_point=destination_point,
         departure_time=departure_time,
+        osrm_routes=osrm_routes,
     )
 
     return generate_route_scenarios(

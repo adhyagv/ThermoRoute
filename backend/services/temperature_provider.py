@@ -1,6 +1,11 @@
 from datetime import datetime
 
 from .fortyguard import FortyGuardClient
+from backend.utils.cache import (
+    get_cache,
+    set_cache,
+    build_climate_cache_key,
+)
 
 
 # ============================================================
@@ -8,6 +13,19 @@ from .fortyguard import FortyGuardClient
 # ============================================================
 
 client = FortyGuardClient()
+
+
+def _round_coord(value):
+    return round(float(value), 3)
+
+
+def _first_numeric(values):
+    if not isinstance(values, list) or not values:
+        return None
+    first = values[0]
+    if isinstance(first, (int, float)):
+        return first
+    return None
 
 
 # ============================================================
@@ -39,6 +57,16 @@ def get_temperature_for_segment(
 
     start_date = now.strftime("%Y-%m-%d")
     start_time = now.strftime("%H:%M")
+
+    cache_key = build_climate_cache_key(
+        latitude=_round_coord(latitude),
+        longitude=_round_coord(longitude),
+        timestamp=start_date,
+    )
+
+    cached = get_cache(cache_key)
+    if isinstance(cached, dict):
+        return cached
 
     try:
 
@@ -108,6 +136,9 @@ def get_temperature_for_segment(
             .get("locations", [{}])[0]
         )
 
+        if not isinstance(location, dict):
+            location = {}
+
         # ----------------------------------------------------
         # ENVIRONMENT PARAMETERS
         # ----------------------------------------------------
@@ -116,6 +147,8 @@ def get_temperature_for_segment(
             "parameters",
             {},
         )
+        if not isinstance(parameters, dict):
+            parameters = {}
 
         # ----------------------------------------------------
         # SOLAR DATA
@@ -126,79 +159,41 @@ def get_temperature_for_segment(
             .get("solar_irradiance", {})
             .get("clear_sky", {})
         )
+        if not isinstance(solar, dict):
+            solar = {}
 
         # ----------------------------------------------------
         # TEMPERATURE
         # ----------------------------------------------------
 
-        temperature = location.get(
-            "temperature",
-            fallback_temperature,
-        )
-
-        # ----------------------------------------------------
-        # HEAT INDEX
-        # ----------------------------------------------------
-
-        heat_index_values = parameters.get(
-            "heat_index_celsius",
-            [],
-        )
-
-        if heat_index_values:
-            heat_index = heat_index_values[0]
-        else:
-            heat_index = temperature
-
-        # ----------------------------------------------------
-        # APPARENT TEMPERATURE
-        # ----------------------------------------------------
-
-        apparent_temperature_values = parameters.get(
-            "apparent_temperature_celsius",
-            [],
-        )
-
-        if apparent_temperature_values:
-            apparent_temperature = (
-                apparent_temperature_values[0]
-            )
-        else:
-            apparent_temperature = temperature
-
-        # ----------------------------------------------------
-        # FINAL RESULT
-        # ----------------------------------------------------
+        temperature = location.get("temperature")
+        if not isinstance(temperature, (int, float)):
+            temperature = fallback_temperature
 
         result = {
             "temperature": temperature,
-
-            "heat_index": heat_index,
-
-            "apparent_temperature": (
-                apparent_temperature
-            ),
-
-            "ghi": solar.get(
-                "ghi",
-                0,
-            ),
-
-            "dni": solar.get(
-                "dni",
-                0,
-            ),
-
-            "dhi": solar.get(
-                "dhi",
-                0,
-            ),
-
             "source": "fortyguard",
-
             "activity_id": activity_id,
         }
 
+        heat_index = _first_numeric(
+            parameters.get("heat_index_celsius")
+        )
+        if heat_index is not None:
+            result["heat_index"] = heat_index
+
+        apparent_temperature = _first_numeric(
+            parameters.get("apparent_temperature_celsius")
+        )
+        if apparent_temperature is not None:
+            result["apparent_temperature"] = apparent_temperature
+
+        for solar_key in ("ghi", "dni", "dhi"):
+            solar_value = solar.get(solar_key)
+            if isinstance(solar_value, (int, float)):
+                result[solar_key] = solar_value
+
+        set_cache(cache_key, result)
         return result
 
     # ========================================================
@@ -215,18 +210,5 @@ def get_temperature_for_segment(
 
         return {
             "temperature": fallback_temperature,
-
-            "heat_index": fallback_temperature,
-
-            "apparent_temperature": (
-                fallback_temperature
-            ),
-
-            "ghi": 0,
-
-            "dni": 0,
-
-            "dhi": 0,
-
             "source": "fallback",
         }
