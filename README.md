@@ -160,38 +160,37 @@ The route geometry is obtained from the routing provider rather than
 manually fabricated.
 
 ---
-
 ## Thermal Exposure
 
-ThermoRoute samples environmental conditions along the route and uses
-those observations together with route travel duration to calculate an
-estimated thermal exposure score.
+ThermoRoute calculates the total thermal exposure for a route by
+calculating exposure for each route segment and summing the segment
+exposure values.
 
-Conceptually:
+The calculation uses the environmental information available for each
+segment:
 
-```text
-Environmental observations
-        +
-Route segment exposure duration
-        |
-        v
-ThermoRoute thermal calculation
-        |
-        v
-Estimated Thermal Exposure Score
-```
+- temperature
+- segment duration in minutes
+- heat index, when available
+- apparent temperature, when available
+- wet-bulb temperature, when available
 
-The thermal exposure score is a ThermoRoute calculated metric.
-
-It is not presented as a FortyGuard forecast.
-
-The production implementation is located at:
+The production calculation is:
 
 ```text
-backend/services/thermal.py
-```
+Total Thermal Exposure
+=
+Σ Segment Thermal Exposure
 
----
+Segment Thermal Exposure
+=
+calculate_segment_exposure(
+    temperature,
+    duration_minutes,
+    heat_index,
+    apparent_temperature,
+    wet_bulb_temperature
+)
 
 ## Optimization
 
@@ -412,47 +411,21 @@ thermal_exposure: 21.12
 ```
 
 ---
+## FortyGuard Live API Evidence
 
-## FortyGuard Live Data Evidence
+ThermoRoute retrieves environmental observations from FortyGuard using
+the environmental parameters endpoint.
 
-A verified live optimization was performed using:
-
-```text
-Origin:
-Phoenix, Arizona
-
-Destination:
-Scottsdale, Arizona
-
-Departure:
-14:00
-```
-
-The live response reported:
+### Request
 
 ```text
-Source:
-fortyguard
+Provider: FortyGuard
+Endpoint: https://api.fortyguard.com/v1/env_params
+Method: POST
 
-FortyGuard samples:
-4
-
-Fallback samples:
-0
-
-Average temperature:
-35.0 °C
-
-Maximum temperature:
-35.0 °C
-```
-
-The environmental values above were returned by FortyGuard.
-
-The thermal exposure value was calculated by ThermoRoute using the
-sampled environmental data and travel information.
-
----
+Headers:
+api-key: REDACTED
+Content-Type: application/json
 
 ## Live Routing Evidence
 
