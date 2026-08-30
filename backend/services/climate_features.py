@@ -242,4 +242,4 @@ def _get_highest_risk_level(
     return max(
         risk_levels,
         key=lambda level: priority.get(level, 0),
-    )
+   )
