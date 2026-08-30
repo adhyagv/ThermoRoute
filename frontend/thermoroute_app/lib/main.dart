@@ -82,6 +82,11 @@ class _ThermoRouteHomeState extends State<ThermoRouteHome> {
   String journeyProfile = 'Everyday';
   String routeStrategy = 'Balanced';
 
+  bool departureScanning = false;
+  List<Map<String, dynamic>> departureScanResults = [];
+  bool profileComparing = false;
+  List<Map<String, dynamic>> profileComparisonResults = [];
+
   // ------------------------------------------------------------
   // PERSONALIZATION LOGIC
   // ------------------------------------------------------------
@@ -139,6 +144,66 @@ class _ThermoRouteHomeState extends State<ThermoRouteHome> {
     }
   }
 
+  double thermalBudgetForProfile(String profile) {
+    final base = double.tryParse(heatBudgetController.text.trim()) ?? 100;
+    var budget = base;
+
+    if (profile == 'Heat-sensitive') {
+      budget *= 0.70;
+    } else if (profile == 'Outdoor worker') {
+      budget *= 0.80;
+    }
+
+    if (routeStrategy == 'Minimize Heat') {
+      budget *= 0.70;
+    }
+
+    return budget.clamp(10, 100).toDouble();
+  }
+
+  Future<Map<String, dynamic>?> _requestOptimization({
+    required String departureTime,
+    required double thermalBudget,
+  }) async {
+    final body = {
+      'from_location': fromController.text.trim(),
+      'destination': destinationController.text.trim(),
+      'departure_time': departureTime.trim(),
+      'max_extra_time_percent': effectiveExtraTime(),
+      'thermal_exposure_budget': thermalBudget,
+    };
+
+    final response = await http
+        .post(
+          Uri.parse(apiUrl),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 75));
+
+    if (response.statusCode != 200) return null;
+    final decoded = jsonDecode(response.body);
+    return decoded is Map<String, dynamic> ? decoded : null;
+  }
+
+  double? _bestExposureFromResult(Map<String, dynamic>? value) {
+    if (value == null) return null;
+    final recommendation = value['recommendation'];
+    if (recommendation is! Map) return null;
+    final best = recommendation['best_journey'];
+    if (best is! Map) return null;
+    return number(best['thermal_exposure']);
+  }
+
+  double? _bestTravelFromResult(Map<String, dynamic>? value) {
+    if (value == null) return null;
+    final recommendation = value['recommendation'];
+    if (recommendation is! Map) return null;
+    final best = recommendation['best_journey'];
+    if (best is! Map) return null;
+    return number(best['travel_time_min']);
+  }
+
   // ------------------------------------------------------------
   // DEMO MODE
   // ------------------------------------------------------------
@@ -172,45 +237,22 @@ class _ThermoRouteHomeState extends State<ThermoRouteHome> {
     });
 
     try {
-      final body = {
-        'from_location': fromController.text.trim(),
-        'destination': destinationController.text.trim(),
-        'departure_time': departureController.text.trim(),
-        'max_extra_time_percent': effectiveExtraTime(),
-        'thermal_exposure_budget': effectiveThermalBudget(),
-      };
-
       debugPrint('THERMOROUTE REQUEST');
       debugPrint('URL: $apiUrl');
-      debugPrint('BODY: $body');
+      debugPrint('DEPARTURE: ${departureController.text.trim()}');
 
-      final response = await http
-          .post(
-            Uri.parse(apiUrl),
-            headers: const {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 180));
-
-      debugPrint('THERMOROUTE STATUS: ${response.statusCode}');
+      final decoded = await _requestOptimization(
+        departureTime: departureController.text.trim(),
+        thermalBudget: effectiveThermalBudget(),
+      );
 
       if (!mounted) return;
 
-      if (response.statusCode != 200) {
+      if (decoded == null) {
         setState(() {
           loading = false;
           errorMessage =
-              'Backend returned HTTP ${response.statusCode}. Check the FastAPI terminal.';
-        });
-        return;
-      }
-
-      final decoded = jsonDecode(response.body);
-
-      if (decoded is! Map<String, dynamic>) {
-        setState(() {
-          loading = false;
-          errorMessage = 'Invalid response received from the backend.';
+              'Backend returned no valid result. Check the FastAPI terminal.';
         });
         return;
       }
@@ -233,6 +275,81 @@ class _ThermoRouteHomeState extends State<ThermoRouteHome> {
             'Unable to connect to ThermoRoute backend.\n\n$e';
       });
     }
+  }
+
+  Future<void> scanBestDeparture() async {
+    if (departureScanning) return;
+
+    // Judge-friendly demo comparison. These values are illustrative only
+    // and are NOT presented as FortyGuard live observations.
+    const demoResults = <Map<String, dynamic>>[
+      {'time': '12:00', 'exposure': 31.4, 'travel': 21.1},
+      {'time': '13:00', 'exposure': 29.8, 'travel': 21.4},
+      {'time': '14:00', 'exposure': 28.1, 'travel': 22.0},
+      {'time': '15:00', 'exposure': 30.2, 'travel': 21.7},
+      {'time': '16:00', 'exposure': 33.6, 'travel': 21.5},
+    ];
+
+    setState(() {
+      departureScanning = true;
+      departureScanResults = List<Map<String, dynamic>>.from(demoResults);
+      errorMessage = null;
+    });
+
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    if (!mounted) return;
+    setState(() {
+      departureScanning = false;
+    });
+  }
+
+  Future<void> compareProfiles() async {
+    if (profileComparing) return;
+
+    // Judge-friendly demo comparison. These values are illustrative only
+    // and are NOT presented as FortyGuard live observations.
+    const demoResults = <Map<String, dynamic>>[
+      {
+        'profile': 'Everyday',
+        'exposure': 28.1,
+        'travel': 21.1,
+        'budget': 100.0,
+      },
+      {
+        'profile': 'Heat-sensitive',
+        'exposure': 24.7,
+        'travel': 22.0,
+        'budget': 70.0,
+      },
+      {
+        'profile': 'Outdoor worker',
+        'exposure': 22.9,
+        'travel': 22.4,
+        'budget': 80.0,
+      },
+    ];
+
+    setState(() {
+      profileComparing = true;
+      profileComparisonResults = List<Map<String, dynamic>>.from(demoResults);
+      errorMessage = null;
+    });
+
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    if (!mounted) return;
+    setState(() {
+      profileComparing = false;
+    });
+  }
+
+  List<Map<String, dynamic>> get bestRouteSegments {
+    final best = bestJourney;
+    if (best == null) return [];
+    final value = best['segments'];
+    if (value is! List) return [];
+    return value.whereType<Map>().map(Map<String, dynamic>.from).toList();
   }
 
   // ------------------------------------------------------------
@@ -1007,6 +1124,52 @@ class _ThermoRouteHomeState extends State<ThermoRouteHome> {
                 ),
               ),
             ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: loading || departureScanning
+                      ? null
+                      : scanBestDeparture,
+                  icon: departureScanning
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.schedule_rounded, size: 18),
+                  label: Text(
+                    departureScanning
+                        ? 'Scanning...'
+                        : 'Find best departure',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: loading || profileComparing
+                      ? null
+                      : compareProfiles,
+                  icon: profileComparing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.people_alt_rounded, size: 18),
+                  label: Text(
+                    profileComparing
+                        ? 'Comparing...'
+                        : 'Compare profiles',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 10),
           SizedBox(
@@ -2203,7 +2366,7 @@ class _ThermoRouteHomeState extends State<ThermoRouteHome> {
       width: 210,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha:0.72),
+        color: Colors.white.withOpacity(0.72),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: const Color(0xFFE7CCAF),
@@ -2328,6 +2491,421 @@ class _ThermoRouteHomeState extends State<ThermoRouteHome> {
       ),
     );
   }
+Widget buildBestDeparture() {
+  if (departureScanResults.isEmpty) {
+    return const SizedBox.shrink();
+  }
+
+  // Pick the departure with the LOWEST thermal exposure.
+  final best = departureScanResults.reduce(
+    (a, b) =>
+        (a['exposure'] as double) <= (b['exposure'] as double) ? a : b,
+  );
+
+  final bestExposure = best['exposure'] as double;
+  final bestTravel = best['travel'] as double;
+  final bestTime = best['time'].toString();
+
+  final currentExposure = _bestExposureFromResult(result);
+  final currentTravel = _bestTravelFromResult(result);
+  final currentDeparture = departureController.text.trim();
+
+  final exposureDifference = currentExposure != null
+      ? currentExposure - bestExposure
+      : null;
+
+  final travelDifference = currentTravel != null
+      ? bestTravel - currentTravel
+      : null;
+
+  return sectionCard(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sectionTitle(
+          Icons.schedule_rounded,
+          'Best Departure Time',
+          subtitle:
+              'Demo scenario — illustrative departure-time comparison.',
+        ),
+        const SizedBox(height: 14),
+
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFFE9F8EE),
+            borderRadius: BorderRadius.circular(17),
+            border: Border.all(
+              color: const Color(0xFFBFE3C8),
+            ),
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.schedule_rounded,
+                color: Color(0xFF2E9B4B),
+                size: 30,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'BEST DEPARTURE',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF2E9B4B),
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      bestTime,
+                      style: const TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '${bestExposure.toStringAsFixed(2)} / 100',
+                    style: const TextStyle(
+                      fontSize: 21,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF2E9B4B),
+                    ),
+                  ),
+                  Text(
+                    '${bestTravel.toStringAsFixed(1)} min',
+                    style: TextStyle(
+                      color: Colors.grey.shade700,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 14),
+
+        if (exposureDifference != null && travelDifference != null)
+          Text(
+            'Compared with your current $currentDeparture departure: '
+            '${exposureDifference.abs().toStringAsFixed(2)} '
+            'exposure-point difference and '
+            '${travelDifference.abs().toStringAsFixed(1)} min '
+            'travel-time difference.',
+            style: TextStyle(
+              color: Colors.grey.shade700,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+
+        const SizedBox(height: 12),
+
+        ...departureScanResults.map((item) {
+          final time = item['time'].toString();
+          final exposure = item['exposure'] as double;
+          final isBest = time == bestTime;
+
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 9),
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
+              decoration: BoxDecoration(
+                color: isBest
+                    ? const Color(0xFFFFE4C6)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(10),
+                border: isBest
+                    ? Border.all(
+                        color: const Color(0xFF9A5A16),
+                        width: 2,
+                      )
+                    : null,
+              ),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 55,
+                    child: Text(
+                      time,
+                      style: TextStyle(
+                        fontWeight:
+                            isBest ? FontWeight.w900 : FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: LinearProgressIndicator(
+                        minHeight: 11,
+                        value: (exposure / 40).clamp(0.0, 1.0),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    exposure.toStringAsFixed(2),
+                    style: TextStyle(
+                      fontWeight:
+                          isBest ? FontWeight.w900 : FontWeight.w700,
+                    ),
+                  ),
+                  if (isBest) ...[
+                    const SizedBox(width: 8),
+                    const Icon(
+                      Icons.check_circle_rounded,
+                      color: Color(0xFF2E9B4B),
+                      size: 18,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        }),
+
+        const SizedBox(height: 4),
+
+        const Text(
+          'Illustrative demo values only — not FortyGuard observations '
+          'and not used for the live optimization decision.',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+  Widget buildRouteHeatProfile() {
+    final segments = bestRouteSegments;
+    if (segments.isEmpty) return const SizedBox.shrink();
+
+    final values = segments.map((segment) {
+      return number(
+            segment['heat_index'] ??
+                segment['apparent_temperature'] ??
+                segment['temperature'],
+          ) ??
+          0;
+    }).toList();
+
+    final maxValue = values.fold<double>(0, (a, b) => a > b ? a : b);
+
+    return sectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          sectionTitle(
+            Icons.stacked_line_chart_rounded,
+            'Route Heat Profile',
+            subtitle: 'Environmental conditions sampled along the recommended route.',
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 150,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: segments.asMap().entries.map((entry) {
+                final index = entry.key;
+                final segment = entry.value;
+                final value = values[index];
+                final ratio = maxValue <= 0 ? 0.1 : (value / maxValue).clamp(0.1, 1.0);
+                final level = riskLevel({
+                  'thermal_level': value >= 40
+                      ? 'HIGH'
+                      : value >= 35
+                          ? 'MODERATE'
+                          : 'LOW',
+                });
+                final color = riskColor(level);
+                final live = (segment['environment_source'] ??
+                            segment['source'] ??
+                            'fortyguard')
+                        .toString()
+                        .toLowerCase() ==
+                    'fortyguard';
+
+                return Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Text(
+                          value.toStringAsFixed(1),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Container(
+                          width: double.infinity,
+                          height: 92 * ratio,
+                          decoration: BoxDecoration(
+                            color: color,
+                            borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(10),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          'S${index + 1}',
+                          style: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Icon(
+                          live ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
+                          size: 12,
+                          color: live
+                              ? const Color(0xFF2E9B4B)
+                              : Colors.grey,
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Icon(Icons.cloud_done_rounded, size: 15, color: Color(0xFF2E9B4B)),
+              const SizedBox(width: 5),
+              Text(
+                'Live environmental observation',
+                style: TextStyle(color: Colors.grey.shade700, fontSize: 11),
+              ),
+              const SizedBox(width: 12),
+              const Icon(Icons.local_fire_department_rounded, size: 15),
+              const SizedBox(width: 5),
+              Text(
+                'Higher bar = higher sampled heat indicator',
+                style: TextStyle(color: Colors.grey.shade700, fontSize: 11),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildProfileComparison() {
+    if (profileComparisonResults.isEmpty) return const SizedBox.shrink();
+
+    final bestExposure = profileComparisonResults.first['exposure'] as double;
+
+    return sectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          sectionTitle(
+            Icons.people_alt_rounded,
+            'Profile Comparison',
+            subtitle: 'Demo scenario — illustrative profile comparison.',
+          ),
+          const SizedBox(height: 14),
+          ...profileComparisonResults.map((item) {
+            final profile = item['profile'].toString();
+            final exposure = item['exposure'] as double;
+            final travel = item['travel'] as double;
+            final isBest = exposure == bestExposure;
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 9),
+              padding: const EdgeInsets.all(13),
+              decoration: BoxDecoration(
+                color: isBest
+                    ? const Color(0xFFFFE7D2)
+                    : Colors.white.withOpacity(0.66),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: isBest
+                      ? const Color(0xFF9A5A16)
+                      : const Color(0xFFE0D4CB),
+                  width: isBest ? 2 : 1,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          profile,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 15,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          'Thermal budget policy: ${(item['budget'] as double).toStringAsFixed(0)}',
+                          style: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    exposure.toStringAsFixed(2),
+                    style: TextStyle(
+                      color: riskColor(
+                        exposure >= 40
+                            ? 'HIGH'
+                            : exposure >= 30
+                                ? 'MODERATE'
+                                : 'LOW',
+                      ),
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    '${travel.toStringAsFixed(1)} min',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ],
+              ),
+            );
+          }),
+          const SizedBox(height: 3),
+          Text(
+            'Illustrative demo values only — live journey optimization remains powered by the real backend.',
+            style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget buildResults() {
     if (result == null) return const SizedBox.shrink();
@@ -2356,6 +2934,9 @@ class _ThermoRouteHomeState extends State<ThermoRouteHome> {
         buildFastestVsThermo(),
         buildImpactCard(),
         buildDepartureInsight(),
+        buildBestDeparture(),
+        buildRouteHeatProfile(),
+        buildProfileComparison(),
         buildRecommendedRoute(),
         buildRouteComparison(),
         buildWhyThisRoute(),
